@@ -1,0 +1,48 @@
+vault_path: "/mnt/c/Users/leish/OneDrive/Documents/Obsidian Vault"
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  allowed_chat_ids:
+    - 5000504204  # Sean Leishman
+  send_notifications: true
+
+ai:
+  provider: "gemini"  # "groq", "gemini", or "anthropic"
+
+  # Groq (free tier - recommended)
+  groq_api_key: "${GROQ_API_KEY}"
+  groq_model: "llama-3.3-70b-versatile"
+
+  # Gemini (free tier)
+  gemini_api_key: "${GEMINI_API_KEY}"
+  gemini_model: "gemini-2.0-flash"
+
+  # Anthropic (paid)
+  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+  anthropic_model: "claude-sonnet-4-20250514"
+
+  max_tokens: 1024
+
+output_folders:
+  youtube: "02 Sources/Videos"
+  article: "02 Sources/Articles"
+  default: "Clippings"
+
+# AI chooses one of these categories to route notes
+routing_categories:
+  - name: "Programming"
+    folder: "02 Sources/Articles/Programming"
+  - name: "Machine Learning"
+    folder: "02 Sources/Articles/ML"
+  - name: "Finance"
+    folder: "02 Sources/Articles/Finance"
+  - name: "Productivity"
+    folder: "02 Sources/Articles/Productivity"
+  - name: "Science"
+    folder: "02 Sources/Articles/Science"
+  - name: "Other"
+    folder: "02 Sources/Articles"
+
+youtube:
+  fetch_transcript: true
+  transcript_languages: ["en", "en-US", "en-GB"]

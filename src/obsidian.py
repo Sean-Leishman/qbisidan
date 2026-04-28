@@ -63,13 +63,9 @@ class ObsidianNoteGenerator:
 
         return self._sanitize_filename(name) + ".md"
 
-    def _format_tags_as_wikilinks(self, tags: list[str]) -> str:
-        """Format topic tags as wikilinks to indexes."""
-        if not tags:
-            return ""
-        # Create wikilinks like [[../04 Indexes/Topic|Topic]]
-        links = [f"[[../04 Indexes/{tag}|{tag}]]" for tag in tags]
-        return " ".join(links)
+    def _format_tag_links(self, resolved_tags: list[str]) -> str:
+        """Join pre-resolved tag wikilinks into a space-separated string."""
+        return " ".join(resolved_tags) if resolved_tags else ""
 
     def generate_note(
         self,
@@ -77,6 +73,7 @@ class ObsidianNoteGenerator:
         summary: SummaryResult,
         user_notes: str | None = None,
         related_links: list[str] | None = None,
+        resolved_tags: list[str] | None = None,
     ) -> str:
         """Generate the markdown content for an Obsidian note."""
         now = datetime.now()
@@ -106,8 +103,8 @@ class ObsidianNoteGenerator:
 
         frontmatter = "\n".join(frontmatter_lines)
 
-        # Build tags line with wikilinks
-        tags_line = self._format_tags_as_wikilinks(summary.tags)
+        # Build tags line with pre-resolved vault wikilinks
+        tags_line = self._format_tag_links(resolved_tags or [])
 
         # Build properties callout
         properties = f"""> [!note]- **Properties**
@@ -126,6 +123,16 @@ class ObsidianNoteGenerator:
             "---",
             "# Overview",
             "",
+        ]
+
+        if summary.content_truncated:
+            content_parts.append(
+                "> [!warning] Source content was truncated before summarisation"
+                " — the summary may not cover the full video/article."
+            )
+            content_parts.append("")
+
+        content_parts += [
             "## Summary",
             summary.summary,
         ]
@@ -177,6 +184,7 @@ class ObsidianNoteGenerator:
         user_notes: str | None = None,
         related_links: list[str] | None = None,
         folder_override: str | None = None,
+        resolved_tags: list[str] | None = None,
     ) -> tuple[Path, str]:
         """Save the note to the appropriate folder in the vault.
 
@@ -197,7 +205,7 @@ class ObsidianNoteGenerator:
             folder = self._get_output_folder(scraped.content_type)
 
         filename = self._generate_filename(scraped)
-        content = self.generate_note(scraped, summary, user_notes, related_links)
+        content = self.generate_note(scraped, summary, user_notes, related_links, resolved_tags)
 
         # Create full path
         full_folder = self.vault_path / folder

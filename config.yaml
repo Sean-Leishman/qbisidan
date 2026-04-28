@@ -21,7 +21,7 @@ ai:
   anthropic_api_key: "${ANTHROPIC_API_KEY}"
   anthropic_model: "claude-sonnet-4-20250514"
 
-  max_tokens: 1024
+  max_tokens: 8192
 
 output_folders:
   youtube: "02 Sources/Videos"
@@ -42,6 +42,10 @@ routing_categories:
     folder: "02 Sources/Articles/Science"
   - name: "Other"
     folder: "02 Sources/Articles"
+
+vault_writer:
+  daily_notes_folder: "06 Daily Notes"
+  ics_folder: ""  # Set to a path your calendar app watches for ICS files
 
 youtube:
   fetch_transcript: true

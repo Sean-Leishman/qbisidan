@@ -1,6 +1,5 @@
 """Telegram bot integration - uses Telegram as the bookmark queue."""
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,14 +8,17 @@ import requests
 
 @dataclass
 class TelegramMessage:
-    """A message from Telegram containing a URL to process."""
+    """A message from Telegram."""
 
     update_id: int
     message_id: int
     chat_id: int
-    url: str
-    user_notes: str | None  # Optional notes/description from user
+    text: str  # Raw message text
     date: int
+    reply_to_text: str | None = None  # Text of the message being replied to
+    # Legacy fields kept for backward compatibility
+    url: str | None = None
+    user_notes: str | None = None
 
 
 class TelegramQueue:
@@ -34,50 +36,46 @@ class TelegramQueue:
         self.state_file = Path(state_file)
         self.last_update_id = self._load_last_update_id()
 
-    def _load_last_update_id(self) -> int:
-        """Load the last processed update ID from state file."""
+    def _load_state(self) -> dict:
         if self.state_file.exists():
             with open(self.state_file, "r") as f:
-                state = json.load(f)
-                return state.get("last_update_id", 0)
-        return 0
+                return json.load(f)
+        return {}
 
-    def _save_last_update_id(self) -> None:
-        """Save the last processed update ID to state file."""
+    def _save_state(self, state: dict) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.state_file, "w") as f:
-            json.dump({"last_update_id": self.last_update_id}, f)
+            json.dump(state, f, indent=2)
 
-    def _extract_url_and_notes(self, text: str) -> tuple[str | None, str | None]:
-        """Extract URL and optional user notes from message text.
+    def _load_last_update_id(self) -> int:
+        return self._load_state().get("last_update_id", 0)
 
-        Supports formats:
-        - Just URL: https://youtube.com/...
-        - URL + notes: https://youtube.com/... \n My notes here
-        - URL + notes: https://youtube.com/... | My notes here
-        """
-        # Match URLs starting with http:// or https://
-        url_pattern = r"https?://[^\s<>\"{}|\\^`\[\]]+"
-        match = re.search(url_pattern, text)
+    def _save_last_update_id(self) -> None:
+        state = self._load_state()
+        state["last_update_id"] = self.last_update_id
+        self._save_state(state)
 
-        if not match:
-            return None, None
+    # ── Activity tracking ──────────────────────────────────────────────────────
 
-        url = match.group(0)
+    def log_activity(self, activity_type: str) -> None:
+        """Increment today's counter for the given activity type."""
+        from datetime import date
+        today = date.today().isoformat()
+        state = self._load_state()
+        activity = state.setdefault("activity", {})
+        day = activity.setdefault(today, {})
+        day[activity_type] = day.get(activity_type, 0) + 1
+        self._save_state(state)
 
-        # Get everything after the URL as notes
-        remaining = text[match.end():].strip()
+    def get_today_stats(self) -> dict[str, int]:
+        """Return today's activity counters."""
+        from datetime import date
+        today = date.today().isoformat()
+        state = self._load_state()
+        return state.get("activity", {}).get(today, {})
 
-        # Remove leading pipe or newline delimiter if present
-        if remaining.startswith("|"):
-            remaining = remaining[1:].strip()
-
-        user_notes = remaining if remaining else None
-
-        return url, user_notes
-
-    def get_pending_urls(self) -> list[TelegramMessage]:
-        """Fetch new messages from Telegram containing URLs."""
+    def get_pending_messages(self) -> list[TelegramMessage]:
+        """Fetch all new messages from Telegram (URLs, commands, plain text)."""
         try:
             response = requests.get(
                 f"{self.base_url}/getUpdates",
@@ -103,23 +101,34 @@ class TelegramQueue:
                 continue
 
             text = msg.get("text", "")
-            url, user_notes = self._extract_url_and_notes(text)
+            if not text.strip():
+                continue
 
-            if url:
-                messages.append(
-                    TelegramMessage(
-                        update_id=update_id,
-                        message_id=msg["message_id"],
-                        chat_id=chat_id,
-                        url=url,
-                        user_notes=user_notes,
-                        date=msg.get("date", 0),
-                    )
+            # Extract reply-to context if present
+            reply_to_text = None
+            reply_msg = msg.get("reply_to_message")
+            if reply_msg:
+                reply_to_text = reply_msg.get("text")
+
+            messages.append(
+                TelegramMessage(
+                    update_id=update_id,
+                    message_id=msg["message_id"],
+                    chat_id=chat_id,
+                    text=text,
+                    date=msg.get("date", 0),
+                    reply_to_text=reply_to_text,
                 )
+            )
 
         # Save state after processing
         self._save_last_update_id()
         return messages
+
+    # Keep old method as alias for backward compatibility
+    def get_pending_urls(self) -> list[TelegramMessage]:
+        """Deprecated: use get_pending_messages() instead."""
+        return self.get_pending_messages()
 
     def send_notification(self, chat_id: int, text: str) -> bool:
         """Send a notification message back to the user."""

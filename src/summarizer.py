@@ -3,6 +3,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .agents.base import BaseAgent
 from .scrapers.base import ScrapedContent
 
 
@@ -16,24 +17,62 @@ class SummaryResult:
     action_items: list[str] = field(default_factory=list)
     review_questions: list[str] = field(default_factory=list)
     key_concepts: list[str] = field(default_factory=list)
+    content_truncated: bool = False
 
 
-class Summarizer:
-    """Generate summaries using AI APIs."""
+class Summarizer(BaseAgent):
+    """Generate summaries using AI APIs with Obsidian-optimized outputs."""
 
-    YOUTUBE_PROMPT = """You are summarizing a YouTube video for personal notes.
+    YOUTUBE_PROMPT = """You are summarizing a YouTube video for high-quality personal notes.
 
-Based on the transcript and metadata below, create a concise summary with:
-1. A brief overview (2-3 sentences) of what the video is about
-2. Key points or takeaways as bullet points (3-7 points)
-3. Any actionable advice or recommendations mentioned
+Your goal is to extract signal over noise — focus on insights, not surface-level points.
 
-Keep the summary focused and practical. Use markdown formatting.
+Based on the transcript and metadata below, produce:
+
+## 1. Overview
+2–4 sentences covering:
+- What the video is about
+- Who it's for
+- The main value or thesis
+
+## 2. Section-by-Section Breakdown
+Identify the video's natural segments. Represent each as a top-level list item with its timestamp range and title, then nest key points beneath it as sub-bullets.
+Format:
+- **[MM:SS–MM:SS] Segment Title**
+  - Key point (as many as the content warrants)
+  - ...
+
+Rules:
+- CRITICAL: Cover the ENTIRE video from start to finish — do not stop early. Every minute of content must appear in at least one segment.
+- No sub-headings — everything is a nested list under this section
+- Denser, higher-value segments deserve more sub-bullets; thin or transitional ones fewer
+- Each sub-bullet must be specific and insight-rich (avoid generic phrasing)
+- Capture what was *learned*, not just what was *said*
+- State the conclusion or outcome directly, not that something was discussed — e.g. "Sleep deprivation reduces recall by ~40%" not "Sleep and memory were discussed"
+- If the answer, finding, or recommendation is clear, lead with it
+- Include brief reasoning where relevant ("X leads to Y because...")
+- Avoid vague advice like "be consistent" unless it comes with a concrete mechanism
+- If the transcript includes timestamps, use them to anchor each segment; the last segment must end at or near the video's total duration
+
+## 3. Actionable Insights
+Concrete actions, habits, or strategies derived from the video.
+Infer actions if not explicitly stated.
+
+## 4. Notable Ideas / Concepts (optional)
+Frameworks, mental models, or unique perspectives introduced.
+
+Style Guidelines:
+- Use markdown
+- Be concise but dense
+- Avoid fluff or repetition
+- Prioritize depth over coverage
 
 Video Title: {title}
 Channel: {author}
 Description: {description}
 {user_notes_section}
+{existing_notes_section}
+
 Transcript:
 {content}
 
@@ -41,18 +80,48 @@ Write the summary now, then provide structured metadata.
 
 {structured_extraction_prompt}"""
 
-    ARTICLE_PROMPT = """You are summarizing a web article for personal notes.
+    ARTICLE_PROMPT = """You are summarizing a web article for high-quality personal knowledge retention.
 
-Based on the content below, create a concise summary with:
-1. A brief overview (2-3 sentences) of the main topic
-2. Key points or insights as bullet points (3-7 points)
-3. Any conclusions or recommendations from the article
+Your goal is to extract the core insights and reasoning, not just restate content.
 
-Keep the summary focused and practical. Use markdown formatting.
+## 1. Overview
+2–4 sentences covering:
+- The topic and central argument
+- Why it matters
+
+## 2. Section-by-Section Breakdown
+Identify the article's natural sections or logical blocks (use headings if present, or infer them). Represent each as a top-level list item, then nest key points beneath it as sub-bullets.
+Format:
+- **Section Title**
+  - Key point (as many as the content warrants)
+  - ...
+
+Rules:
+- No sub-headings — everything is a nested list under this section
+- Denser, higher-value sections deserve more sub-bullets; thin sections fewer
+- Each sub-bullet must contain a meaningful idea with reasoning or context
+- Capture what was *learned*, not just what was *said*
+- State the conclusion or outcome directly — e.g. "The study found X increases Y by Z%" not "The study examined the relationship between X and Y"
+- If the finding, argument, or recommendation is clear, lead with it rather than describing that it was made
+- Explain *why* each point matters, not just what it says
+- Avoid generic restatements
+
+## 3. Conclusions / Implications
+What should be taken away. Broader meaning or consequences.
+
+## 4. Practical Applications
+Concrete ways to apply the ideas. Infer if not explicit.
+
+Style Guidelines:
+- Dense, useful, non-generic
+- Avoid repetition
+- Focus on clarity
 
 Title: {title}
 Author: {author}
 {user_notes_section}
+{existing_notes_section}
+
 Content:
 {content}
 
@@ -61,24 +130,37 @@ Write the summary now, then provide structured metadata.
 {structured_extraction_prompt}"""
 
     STRUCTURED_EXTRACTION = """
-After your summary, extract the following metadata as JSON. Place this at the very end of your response:
+After your summary, extract metadata as JSON at the very end enclosed in ```json fences:
 
 ```json
 {{
   "category": "<one of: {categories}>",
-  "tags": ["topic1", "topic2", "topic3"],
-  "action_items": ["actionable task 1", "actionable task 2"],
-  "review_questions": ["question for spaced repetition?", "another review question?"],
-  "key_concepts": ["main concept 1", "main concept 2", "main concept 3"]
+  "tags": [],
+  "action_items": [],
+  "review_questions": [],
+  "key_concepts": []
 }}
 ```
 
-Guidelines:
-- category: Choose the SINGLE best category from the list provided
-- tags: 2-5 topic keywords that describe the main subjects (e.g., "Python", "Machine Learning", "Investing")
-- action_items: Specific actionable tasks mentioned or implied (leave empty if none)
-- review_questions: 2-4 questions to test understanding of key points
-- key_concepts: 3-5 main concepts or terms that could link to other notes"""
+Fields:
+
+category: choose ONE from the list above
+
+tags:
+- Generate 3–6 plain text topic terms — NO [[brackets]], NO # symbols, NO special formatting
+- Each tag is simply the concept name, e.g. "Machine Learning", "Python", "Sleep Science"
+- Use Title Case for multi-word terms
+- Pick specific, meaningful topics (not vague labels like "interesting" or "overview")
+
+action_items:
+- Must start with verbs
+- Be concrete and actionable
+
+review_questions:
+- Focus on understanding (why/how)
+
+key_concepts:
+- 3–5 important ideas or frameworks mentioned in the content"""
 
     def __init__(
         self,
@@ -87,159 +169,101 @@ Guidelines:
         model: str | None = None,
         max_tokens: int = 1024,
         routing_categories: list[str] | None = None,
+        existing_notes: list[str] | None = None,
     ):
-        self.provider = provider
-        self.api_key = api_key
-        self.max_tokens = max_tokens
+        super().__init__(provider=provider, api_key=api_key, model=model, max_tokens=max_tokens)
         self.routing_categories = routing_categories or ["Other"]
+        self.existing_notes = existing_notes or []
 
-        if provider == "groq":
-            self.model = model or "llama-3.3-70b-versatile"
-            self._init_groq()
-        elif provider == "gemini":
-            self.model = model or "gemini-2.0-flash-lite"
-            self._init_gemini()
-        else:  # anthropic
-            self.model = model or "claude-sonnet-4-20250514"
-            self._init_anthropic()
-
-    def _init_groq(self):
-        """Initialize Groq client."""
-        from groq import Groq
-
-        self.client = Groq(api_key=self.api_key)
-
-    def _init_gemini(self):
-        """Initialize Google Gemini client."""
-        from google import genai
-
-        self.client = genai.Client(api_key=self.api_key)
-
-    def _init_anthropic(self):
-        """Initialize Anthropic client."""
-        from anthropic import Anthropic
-
-        self.client = Anthropic(api_key=self.api_key)
-
-    def _truncate_content(self, content: str, max_chars: int = 50000) -> str:
-        """Truncate content to fit within context limits."""
+    def _truncate_content(self, content: str, max_chars: int = 50000) -> tuple[str, bool]:
         if len(content) <= max_chars:
-            return content
-        return content[:max_chars] + "\n\n[Content truncated...]"
+            return content, False
+        return content[:max_chars] + "\n\n[Content truncated...]", True
 
-    def _summarize_groq(self, prompt: str) -> str:
-        """Generate summary using Groq."""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.max_tokens,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"Error generating summary with Groq: {e}")
-            return f"*Summary generation failed: {e}*"
+    def _build_existing_notes_section(self) -> str:
+        if not self.existing_notes:
+            return ""
+        notes = "\n".join(f"- {n}" for n in self.existing_notes[:50])
+        return f"\nExisting notes in my knowledge base:\n{notes}\n\nIf a tag matches one of these, use the EXACT [[Wiki Link]] name.\n"
 
-    def _summarize_gemini(self, prompt: str) -> str:
-        """Generate summary using Gemini."""
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-            )
-            return response.text
-        except Exception as e:
-            print(f"Error generating summary with Gemini: {e}")
-            return f"*Summary generation failed: {e}*"
+    def _extract_json_from_response(self, response: str) -> tuple[dict | None, str]:
+        """Extract the metadata JSON and clean summary text from the AI response.
 
-    def _summarize_anthropic(self, prompt: str) -> str:
-        """Generate summary using Claude."""
-        try:
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return message.content[0].text
-        except Exception as e:
-            print(f"Error generating summary with Claude: {e}")
-            return f"*Summary generation failed: {e}*"
+        Returns (data_dict_or_None, clean_summary_text).
+        """
+        # 1. Fenced ```json ... ``` block
+        match = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                return data, response[: match.start()].strip()
+            except json.JSONDecodeError:
+                pass
+
+        # 2. Walk the string to find the last top-level { } block containing "category"
+        last_start = -1
+        depth = 0
+        for i, ch in enumerate(response):
+            if ch == "{":
+                if depth == 0:
+                    last_start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and last_start >= 0:
+                    candidate = response[last_start : i + 1]
+                    if '"category"' in candidate:
+                        try:
+                            data = json.loads(candidate)
+                            return data, response[:last_start].strip()
+                        except json.JSONDecodeError:
+                            last_start = -1  # reset and keep searching
+
+        # 3. No parseable JSON found — return the response as-is but strip any
+        #    trailing raw-JSON-looking block so it doesn't end up in the note.
+        clean = re.sub(r"\s*\{[^{}]{0,2000}\}\s*$", "", response, flags=re.DOTALL).strip()
+        return None, clean
 
     def _parse_structured_response(self, response: str) -> SummaryResult:
-        """Parse AI response to extract summary and structured JSON metadata."""
-        # Try to find JSON block in the response
-        json_match = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
-
-        if json_match:
-            json_str = json_match.group(1)
-            # Extract summary (everything before the JSON block)
-            summary = response[: json_match.start()].strip()
-
-            try:
-                data = json.loads(json_str)
-                return SummaryResult(
-                    summary=summary,
-                    category=data.get("category", "Other"),
-                    tags=data.get("tags", []),
-                    action_items=data.get("action_items", []),
-                    review_questions=data.get("review_questions", []),
-                    key_concepts=data.get("key_concepts", []),
-                )
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback: try to find raw JSON object without code fence
-        json_match = re.search(r"\{[^{}]*\"category\"[^{}]*\}", response, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group(0))
-                summary = response[: json_match.start()].strip()
-                return SummaryResult(
-                    summary=summary,
-                    category=data.get("category", "Other"),
-                    tags=data.get("tags", []),
-                    action_items=data.get("action_items", []),
-                    review_questions=data.get("review_questions", []),
-                    key_concepts=data.get("key_concepts", []),
-                )
-            except json.JSONDecodeError:
-                pass
-
-        # If no JSON found, return response as summary with defaults
-        return SummaryResult(summary=response.strip())
+        data, summary = self._extract_json_from_response(response)
+        if data is None:
+            return SummaryResult(summary=summary)
+        return SummaryResult(
+            summary=summary,
+            category=data.get("category", "Other"),
+            tags=data.get("tags", []),
+            action_items=data.get("action_items", []),
+            review_questions=data.get("review_questions", []),
+            key_concepts=data.get("key_concepts", []),
+        )
 
     def summarize(self, scraped: ScrapedContent, user_notes: str | None = None) -> SummaryResult:
-        """Generate a structured summary for the scraped content."""
-        # Choose prompt based on content type
         if scraped.content_type == "youtube":
             prompt_template = self.YOUTUBE_PROMPT
         else:
             prompt_template = self.ARTICLE_PROMPT
 
-        # Build user notes section if provided
         user_notes_section = ""
         if user_notes:
-            user_notes_section = f"\nUser's specific interests/notes: {user_notes}\nPlease focus on these aspects in the summary.\n"
+            user_notes_section = f"\nUser priorities:\n{user_notes}\n\nPrioritize these topics when extracting insights.\n"
 
-        # Build structured extraction prompt with categories
-        categories_str = ", ".join(self.routing_categories)
-        structured_prompt = self.STRUCTURED_EXTRACTION.format(categories=categories_str)
+        structured_prompt = self.STRUCTURED_EXTRACTION.format(
+            categories=", ".join(self.routing_categories)
+        )
 
-        # Build prompt with available data
+        truncated_content, was_truncated = self._truncate_content(scraped.content or "")
+
         prompt = prompt_template.format(
             title=scraped.title or "Unknown",
             author=scraped.author or "Unknown",
-            description=scraped.description or "No description available",
-            content=self._truncate_content(scraped.content) or "No content available",
+            description=scraped.description or "",
+            content=truncated_content,
             user_notes_section=user_notes_section,
+            existing_notes_section=self._build_existing_notes_section(),
             structured_extraction_prompt=structured_prompt,
         )
 
-        if self.provider == "groq":
-            response = self._summarize_groq(prompt)
-        elif self.provider == "gemini":
-            response = self._summarize_gemini(prompt)
-        else:
-            response = self._summarize_anthropic(prompt)
-
-        return self._parse_structured_response(response)
+        response = self._call(prompt)
+        result = self._parse_structured_response(response)
+        result.content_truncated = was_truncated
+        return result

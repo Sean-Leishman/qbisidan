@@ -1,4 +1,5 @@
 """Note linking engine - finds and links to existing notes in the vault."""
+import re
 import time
 from pathlib import Path
 
@@ -92,6 +93,68 @@ class NoteLinkEngine:
         # Remove .md extension for wikilink
         link_path = str(rel_path.with_suffix(""))
         return f"[[{link_path}|{display}]]"
+
+    def find_note_by_url(self, url: str) -> str | None:
+        """Return the note title if any existing vault file references this URL.
+
+        Scans all markdown files; returns the stem of the first match.
+        """
+        for md_file in self.vault_path.rglob("*.md"):
+            if any(part.startswith(".") for part in md_file.parts):
+                continue
+            try:
+                if url in md_file.read_text(encoding="utf-8", errors="ignore"):
+                    return md_file.stem
+            except OSError:
+                pass
+        return None
+
+    def resolve_tags(self, raw_tags: list[str]) -> list[str]:
+        """Resolve plain-text tag terms against the vault.
+
+        For each term:
+        - If a note exists in 03 Tags or 04 Indexes → wikilink to it
+        - Otherwise → create a minimal note in 03 Tags and wikilink to it
+
+        Returns a list of wikilink strings like ``[[03 Tags/Python|Python]]``.
+        """
+        index = self._build_index()
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for raw in raw_tags:
+            term = self._normalize_tag(raw)
+            if not term or term.lower() in seen:
+                continue
+            seen.add(term.lower())
+
+            if term.lower() in index:
+                path = index[term.lower()]
+                rel = path.relative_to(self.vault_path)
+                link_path = str(rel.with_suffix(""))
+                result.append(f"[[{link_path}|{path.stem}]]")
+            else:
+                # Create a minimal tag note
+                tag_file = self.vault_path / "03 Tags" / f"{term}.md"
+                tag_file.parent.mkdir(parents=True, exist_ok=True)
+                if not tag_file.exists():
+                    tag_file.write_text(f"# {term}\n", encoding="utf-8")
+                # Add to cache so duplicate terms in the same run resolve correctly
+                index[term.lower()] = tag_file
+                self._index_cache = index
+                result.append(f"[[03 Tags/{term}|{term}]]")
+
+        return result
+
+    @staticmethod
+    def _normalize_tag(raw: str) -> str:
+        """Strip [[...]], #, and extra whitespace from an AI-generated tag term."""
+        raw = raw.strip()
+        # [[Display|Target]] or [[Target]]
+        raw = re.sub(r"^\[\[(?:[^\]|]+\|)?([^\]]+)\]\]$", r"\1", raw)
+        # Leading #
+        raw = raw.lstrip("#").strip()
+        return raw
 
     def clear_cache(self) -> None:
         """Clear the note index cache."""

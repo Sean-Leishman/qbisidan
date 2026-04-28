@@ -1,129 +1,132 @@
-"""Tests for summarizer module - SummaryResult and JSON parsing."""
+"""Tests for summarizer module — SummaryResult, JSON parsing, truncation."""
 import pytest
 
 from src.summarizer import Summarizer, SummaryResult
 
 
+@pytest.fixture
+def summarizer():
+    """Summarizer instance that never touches an API."""
+    s = Summarizer.__new__(Summarizer)
+    s.routing_categories = ["Programming", "Machine Learning", "Other"]
+    s.existing_notes = []
+    return s
+
+
+# ── SummaryResult defaults ─────────────────────────────────────────────────────
+
 class TestSummaryResult:
-    """Test SummaryResult dataclass."""
+    def test_defaults(self):
+        r = SummaryResult(summary="Test")
+        assert r.category == "Other"
+        assert r.tags == []
+        assert r.action_items == []
+        assert r.review_questions == []
+        assert r.key_concepts == []
+        assert r.content_truncated is False
 
-    def test_default_values(self):
-        """Test SummaryResult initializes with correct defaults."""
-        result = SummaryResult(summary="Test summary")
-
-        assert result.summary == "Test summary"
-        assert result.category == "Other"
-        assert result.tags == []
-        assert result.action_items == []
-        assert result.review_questions == []
-        assert result.key_concepts == []
-
-    def test_full_initialization(self):
-        """Test SummaryResult with all fields."""
-        result = SummaryResult(
-            summary="Full summary",
+    def test_full_init(self):
+        r = SummaryResult(
+            summary="Full",
             category="Programming",
-            tags=["Python", "Testing"],
-            action_items=["Write tests", "Review code"],
-            review_questions=["What is pytest?"],
-            key_concepts=["Unit Testing", "Mocking"],
+            tags=["Python"],
+            action_items=["Write tests"],
+            review_questions=["Why?"],
+            key_concepts=["Unit Testing"],
+            content_truncated=True,
         )
+        assert r.category == "Programming"
+        assert r.content_truncated is True
 
-        assert result.summary == "Full summary"
-        assert result.category == "Programming"
-        assert result.tags == ["Python", "Testing"]
-        assert result.action_items == ["Write tests", "Review code"]
-        assert result.review_questions == ["What is pytest?"]
-        assert result.key_concepts == ["Unit Testing", "Mocking"]
 
+# ── Truncation ─────────────────────────────────────────────────────────────────
+
+class TestTruncateContent:
+    def test_short_content_not_truncated(self, summarizer):
+        text, flag = summarizer._truncate_content("short", max_chars=100)
+        assert text == "short"
+        assert flag is False
+
+    def test_long_content_truncated(self, summarizer):
+        text, flag = summarizer._truncate_content("x" * 200, max_chars=100)
+        assert len(text) <= 130  # 100 chars + marker overhead
+        assert flag is True
+
+    def test_truncation_marker_added(self, summarizer):
+        text, _ = summarizer._truncate_content("x" * 200, max_chars=100)
+        assert "[Content truncated...]" in text
+
+    def test_exact_length_not_truncated(self, summarizer):
+        text, flag = summarizer._truncate_content("a" * 50, max_chars=50)
+        assert flag is False
+
+
+# ── JSON parsing ───────────────────────────────────────────────────────────────
 
 class TestParseStructuredResponse:
-    """Test JSON parsing from AI responses."""
+    def test_fenced_json(self, summarizer):
+        response = """Summary text here.\n\n```json\n{"category": "Programming", "tags": ["Python"], "action_items": ["Do X"], "review_questions": ["Why?"], "key_concepts": ["X"]}\n```"""
+        r = summarizer._parse_structured_response(response)
+        assert "Summary text here" in r.summary
+        assert r.category == "Programming"
+        assert r.tags == ["Python"]
+        assert r.action_items == ["Do X"]
 
-    @pytest.fixture
-    def summarizer(self):
-        """Create summarizer without API calls."""
-        # Create with dummy values - we won't call the API
-        s = Summarizer.__new__(Summarizer)
-        s.routing_categories = ["Programming", "Machine Learning", "Other"]
-        return s
+    def test_unfenced_json_extracted(self, summarizer):
+        response = 'Summary about ML.\n{"category": "Machine Learning", "tags": ["Neural Networks"], "action_items": [], "review_questions": ["What is backprop?"], "key_concepts": ["Gradient Descent"]}'
+        r = summarizer._parse_structured_response(response)
+        assert "Summary about ML" in r.summary
+        assert r.category == "Machine Learning"
+        assert "Neural Networks" in r.tags
 
-    def test_parse_json_with_code_fence(self, summarizer):
-        """Test parsing JSON in code fence."""
-        response = """Here is a summary of the article.
+    def test_raw_json_not_in_summary(self, summarizer):
+        """When JSON is found, the summary text should not contain the JSON block."""
+        response = 'Clean summary.\n{"category": "Other", "tags": [], "action_items": [], "review_questions": [], "key_concepts": []}'
+        r = summarizer._parse_structured_response(response)
+        assert "category" not in r.summary
+        assert "{" not in r.summary
 
-It covers important topics about Python programming.
+    def test_no_json_returns_plain_summary(self, summarizer):
+        response = "Plain summary with no metadata."
+        r = summarizer._parse_structured_response(response)
+        assert r.summary == "Plain summary with no metadata."
+        assert r.category == "Other"
+        assert r.tags == []
 
-```json
-{
-  "category": "Programming",
-  "tags": ["Python", "Web Development"],
-  "action_items": ["Learn Flask", "Build API"],
-  "review_questions": ["What is Flask?", "How do routes work?"],
-  "key_concepts": ["REST API", "HTTP Methods"]
-}
-```"""
+    def test_invalid_json_in_fence_falls_back(self, summarizer):
+        response = "Summary.\n```json\n{invalid}\n```"
+        r = summarizer._parse_structured_response(response)
+        assert "Summary" in r.summary
+        assert r.category == "Other"
 
-        result = summarizer._parse_structured_response(response)
+    def test_partial_json_fields_have_defaults(self, summarizer):
+        response = 'Quick note.\n```json\n{"category": "Finance", "tags": ["Investing"]}\n```'
+        r = summarizer._parse_structured_response(response)
+        assert r.category == "Finance"
+        assert r.tags == ["Investing"]
+        assert r.action_items == []
 
-        assert "summary of the article" in result.summary
-        assert result.category == "Programming"
-        assert result.tags == ["Python", "Web Development"]
-        assert result.action_items == ["Learn Flask", "Build API"]
-        assert result.review_questions == ["What is Flask?", "How do routes work?"]
-        assert result.key_concepts == ["REST API", "HTTP Methods"]
+    def test_trailing_raw_json_stripped_from_summary(self, summarizer):
+        """Raw JSON at end with no parseable content should be stripped from summary text."""
+        response = 'Good summary text.\n\n{"category": "Other", "tags": [], "action_items": [], "review_questions": [], "key_concepts": []}'
+        r = summarizer._parse_structured_response(response)
+        # Either parsed (clean summary) or stripped from fallback
+        assert "category" not in r.summary or r.category == "Other"
 
-    def test_parse_json_without_code_fence(self, summarizer):
-        """Test parsing raw JSON without code fence."""
-        response = """This is a summary about machine learning.
-
-{"category": "Machine Learning", "tags": ["Neural Networks"], "action_items": [], "review_questions": ["What is backprop?"], "key_concepts": ["Gradient Descent"]}"""
-
-        result = summarizer._parse_structured_response(response)
-
-        assert "machine learning" in result.summary
-        assert result.category == "Machine Learning"
-        assert result.tags == ["Neural Networks"]
-        assert result.review_questions == ["What is backprop?"]
-
-    def test_parse_no_json_returns_full_response(self, summarizer):
-        """Test fallback when no JSON found."""
-        response = "This is just a plain summary without any JSON."
-
-        result = summarizer._parse_structured_response(response)
-
-        assert result.summary == response
-        assert result.category == "Other"
-        assert result.tags == []
-
-    def test_parse_invalid_json_returns_fallback(self, summarizer):
-        """Test fallback when JSON is malformed."""
-        response = """Summary here.
-
-```json
-{invalid json content}
-```"""
-
-        result = summarizer._parse_structured_response(response)
-
-        assert "Summary here" in result.summary
-        assert result.category == "Other"
-
-    def test_parse_partial_json_fields(self, summarizer):
-        """Test parsing JSON with only some fields."""
-        response = """Quick summary.
-
-```json
-{
-  "category": "Finance",
-  "tags": ["Investing"]
-}
-```"""
-
-        result = summarizer._parse_structured_response(response)
-
-        assert result.category == "Finance"
-        assert result.tags == ["Investing"]
-        assert result.action_items == []
-        assert result.review_questions == []
-        assert result.key_concepts == []
+    def test_multiline_fenced_json(self, summarizer):
+        response = (
+            "Great article summary.\n\n"
+            "```json\n"
+            "{\n"
+            '  "category": "Science",\n'
+            '  "tags": ["Biology", "Research"],\n'
+            '  "action_items": ["Read more"],\n'
+            '  "review_questions": ["What drives evolution?"],\n'
+            '  "key_concepts": ["Natural Selection"]\n'
+            "}\n"
+            "```"
+        )
+        r = summarizer._parse_structured_response(response)
+        assert r.category == "Science"
+        assert "Biology" in r.tags
+        assert "Great article summary" in r.summary

@@ -66,12 +66,21 @@ class RoutingCategory:
 
 
 @dataclass
+class VaultWriterConfig:
+    """Configuration for vault file writing (daily notes, events)."""
+
+    daily_notes_folder: str = "06 Daily Notes"
+    ics_folder: str = ""
+
+
+@dataclass
 class Config:
     vault_path: Path
     telegram: TelegramConfig
     ai: AIConfig
     output_folders: OutputFoldersConfig
     youtube: YouTubeConfig
+    vault_writer: VaultWriterConfig = field(default_factory=VaultWriterConfig)
     routing_categories: list[RoutingCategory] = field(default_factory=list)
 
     def get_routing_category_names(self) -> list[str]:
@@ -129,6 +138,10 @@ class Config:
                 transcript_languages=data["youtube"].get(
                     "transcript_languages", ["en", "en-US", "en-GB"]
                 ),
+            ),
+            vault_writer=VaultWriterConfig(
+                daily_notes_folder=data.get("vault_writer", {}).get("daily_notes_folder", "06 Daily Notes"),
+                ics_folder=data.get("vault_writer", {}).get("ics_folder", ""),
             ),
             routing_categories=[
                 RoutingCategory(name=cat["name"], folder=cat["folder"])

@@ -1,14 +1,18 @@
 """Main processing orchestrator."""
 import logging
+import re
+import time
 from dataclasses import dataclass
 
 from .agents.question_agent import QuestionAgent
+from .agents.topic_filter import TopicFilterAgent
 from .agents.vault_writer import VaultWriter
 from .commands import ParsedCommand, parse_message
 from .config import Config
+from .crawl_state import CrawlRunState, CrawlStateStore
 from .linker import NoteLinkEngine
 from .obsidian import ObsidianNoteGenerator
-from .scrapers import WebpageScraper, YouTubeScraper
+from .scrapers import ChannelEnumerator, WebpageScraper, YouTubeScraper
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
 from .telegram_queue import TelegramMessage, TelegramQueue
@@ -35,7 +39,11 @@ class Processor:
             allowed_chat_ids=config.telegram.allowed_chat_ids,
         )
         self.scrapers = [
-            YouTubeScraper(transcript_languages=config.youtube.transcript_languages),
+            YouTubeScraper(
+                transcript_languages=config.youtube.transcript_languages,
+                cookies_from_browser=config.youtube.cookies_from_browser,
+                cookies_file=config.youtube.cookies_file,
+            ),
             WebpageScraper(),
         ]
         self.summarizer = Summarizer(
@@ -51,6 +59,17 @@ class Processor:
             model=config.ai.model,
             max_tokens=512,
         )
+        self.topic_filter = TopicFilterAgent(
+            provider=config.ai.provider,
+            api_key=config.ai.api_key,
+            model=config.ai.model,
+            max_tokens=512,
+        )
+        self.channel_enumerator = ChannelEnumerator(
+            cookies_from_browser=config.youtube.cookies_from_browser,
+            cookies_file=config.youtube.cookies_file,
+        )
+        self.crawl_state = CrawlStateStore(config.channel_crawl.state_file)
         self.linker = NoteLinkEngine(vault_path=config.vault_path)
         self.note_generator = ObsidianNoteGenerator(
             vault_path=config.vault_path,
@@ -106,6 +125,8 @@ class Processor:
         "`/project <name> <text>` — Notes.md\n\n"
         "*Calendar*\n"
         "`/event <title> <YYYY-MM-DD> <HH:MM>` — ICS + daily note\n\n"
+        "*Channel crawl*\n"
+        "`/crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]`\n\n"
         "*Date syntax:* `@today` `@tomorrow` `@friday` `@2026-05-01`\n\n"
         "`/search <query>` — search vault notes\n"
         "`/status` — today's capture summary\n"
@@ -161,6 +182,37 @@ class Processor:
         self.telegram.send_notification(message.chat_id, "\n".join(lines))
         return ProcessingResult(url=None, success=True)
 
+    def _save_scraped(self, scraped, user_notes: str | None) -> ProcessingResult:
+        """Summarise pre-scraped content and write the vault note. Shared by URL + crawl paths."""
+        url = scraped.url
+        try:
+            summary = self.summarizer.summarize(scraped, user_notes=user_notes)
+            logger.info(f"AI category: {summary.category}, tags: {summary.tags}")
+
+            if scraped.content_type == "youtube":
+                try:
+                    questions = self.question_agent.run(summary.summary, scraped.title)
+                    if questions:
+                        summary.review_questions = questions
+                        logger.info(f"Generated {len(questions)} review questions")
+                except Exception as e:
+                    logger.warning(f"Question generation failed: {e}")
+
+            resolved_tags = self.linker.resolve_tags(summary.tags)
+            related_links = self.linker.find_related_notes(summary.key_concepts, summary.tags)
+            folder_override = self._get_folder_for_content(scraped, summary)
+
+            file_path, folder = self.note_generator.save_note(
+                scraped, summary, user_notes, related_links, folder_override,
+                resolved_tags=resolved_tags,
+            )
+            logger.info(f"Created: {file_path}")
+            self.telegram.log_activity("note")
+            return ProcessingResult(url=url, success=True, title=scraped.title, folder=folder)
+        except Exception as e:
+            logger.exception(f"Error saving scraped content for {url}")
+            return ProcessingResult(url=url, success=False, error=str(e))
+
     def _process_url(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
         """Full bookmark pipeline: scrape → summarise → create note."""
         url = cmd.url
@@ -183,34 +235,11 @@ class Processor:
 
         try:
             scraped = scraper.scrape(url)
-
-            summary = self.summarizer.summarize(scraped, user_notes=cmd.user_notes)
-            logger.info(f"AI category: {summary.category}, tags: {summary.tags}")
-
-            if scraped.content_type == "youtube":
-                try:
-                    questions = self.question_agent.run(summary.summary, scraped.title)
-                    if questions:
-                        summary.review_questions = questions
-                        logger.info(f"Generated {len(questions)} review questions")
-                except Exception as e:
-                    logger.warning(f"Question generation failed: {e}")
-
-            resolved_tags = self.linker.resolve_tags(summary.tags)
-            related_links = self.linker.find_related_notes(summary.key_concepts, summary.tags)
-            folder_override = self._get_folder_for_content(scraped, summary)
-
-            file_path, folder = self.note_generator.save_note(
-                scraped, summary, cmd.user_notes, related_links, folder_override,
-                resolved_tags=resolved_tags,
-            )
-            logger.info(f"Created: {file_path}")
-            self.telegram.log_activity("note")
-            return ProcessingResult(url=url, success=True, title=scraped.title, folder=folder)
-
         except Exception as e:
-            logger.exception(f"Error processing {url}")
+            logger.exception(f"Error scraping {url}")
             return ProcessingResult(url=url, success=False, error=str(e))
+
+        return self._save_scraped(scraped, cmd.user_notes)
 
     def _process_todo_inbox(self, cmd: ParsedCommand, _: TelegramMessage) -> ProcessingResult:
         """/todo (no date) → 08 Trackers/Inbox.md"""
@@ -347,6 +376,185 @@ class Processor:
             logger.exception("Error processing event")
             return ProcessingResult(url=None, success=False, error=str(e))
 
+    # ── Channel crawl ──────────────────────────────────────────────────────────
+
+    def _channel_name_from_url(self, url: str) -> str:
+        match = re.search(r"youtube\.com/(@[\w.-]+|c/[\w.-]+|channel/[\w.-]+|user/[\w.-]+)", url)
+        if match:
+            return match.group(1).lstrip("@").replace("c/", "").replace("channel/", "").replace("user/", "")
+        return "channel"
+
+    def _render_progress_bar(self, channel: str, done: int, total: int, current: str | None) -> str:
+        bar_width = 20
+        ratio = (done / total) if total else 0
+        filled = int(ratio * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        line = f"*Crawling {channel}*\n`[{bar}]` {done}/{total}"
+        if current:
+            line += f"\nCurrent: {current[:60]}"
+        return line
+
+    def run_channel_crawl(
+        self,
+        url: str,
+        date_from=None,
+        date_to=None,
+        topic: str | None = None,
+        progress_callback=None,
+        resume: bool = True,
+    ) -> ProcessingResult:
+        """Run a channel crawl end-to-end. Used by both Telegram and CLI entry points.
+
+        progress_callback(done, total, current_title) is called before each video. If None,
+        no progress is reported.
+        """
+        if not url:
+            return ProcessingResult(
+                url=None, success=False,
+                error="Usage: /crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]",
+            )
+
+        cfg = self.config.channel_crawl
+        channel = self._channel_name_from_url(url)
+        state_key = CrawlStateStore.make_key(
+            channel,
+            date_from.isoformat() if date_from else "all",
+            date_to.isoformat() if date_to else "all",
+            topic,
+        )
+        state = self.crawl_state.load(state_key) if resume else CrawlRunState()
+        processed = set(state.processed_ids)
+        filtered_out = set(state.filtered_out_ids)
+
+        stubs = self.channel_enumerator.list_videos(url, date_from=date_from, date_to=date_to)
+        if not stubs:
+            return ProcessingResult(
+                url=url, success=False,
+                error=f"No regular videos found on {url} in given range",
+            )
+
+        # Stage 1: title filter (only when many videos AND topic given).
+        if topic and len(stubs) > cfg.title_filter_threshold:
+            titles = [s.title for s in stubs]
+            keep_ids = self.topic_filter.filter_titles(titles, topic)
+            stubs = [stubs[i] for i in keep_ids]
+            logger.info(f"Title filter retained {len(stubs)} of {len(titles)} videos")
+
+        if len(stubs) > cfg.max_videos:
+            logger.info(f"Capping crawl at {cfg.max_videos} (had {len(stubs)})")
+            stubs = stubs[: cfg.max_videos]
+
+        total = len(stubs)
+        for idx, stub in enumerate(stubs, start=1):
+            if progress_callback:
+                try:
+                    progress_callback(idx - 1, total, stub.title)
+                except Exception:
+                    logger.exception("Progress callback raised; continuing crawl")
+
+            if stub.video_id in processed or stub.video_id in filtered_out:
+                logger.info(f"Resume: already handled {stub.video_id} ({stub.title})")
+                continue
+
+            existing = self.linker.find_note_by_url(stub.url)
+            if existing:
+                state.skipped_titles.append(existing)
+                state.processed_ids.append(stub.video_id)
+                self.crawl_state.save(state_key, state)
+                continue
+
+            # Stage 2: transcript-level topic filter. Scrape once, then decide.
+            scraper = self._get_scraper(stub.url)
+            if not scraper:
+                state.errors.append(f"{stub.title}: no scraper")
+                state.processed_ids.append(stub.video_id)
+                self.crawl_state.save(state_key, state)
+                continue
+
+            try:
+                scraped = scraper.scrape(stub.url)
+            except Exception as e:
+                logger.exception(f"Scrape failed for {stub.url}")
+                state.errors.append(f"{stub.title}: scrape failed: {e}")
+                # Do NOT mark as processed — resume should retry transient failures
+                # (bot detection, network blips). Persistent failures (deleted video)
+                # will retry too; use --no-resume to start fresh.
+                self.crawl_state.save(state_key, state)
+                if cfg.sleep_seconds:
+                    time.sleep(cfg.sleep_seconds)
+                continue
+
+            if topic:
+                excerpt_parts = [scraped.description or "", scraped.content or ""]
+                excerpt = "\n".join(p for p in excerpt_parts if p)[: cfg.transcript_filter_chars]
+                if not self.topic_filter.is_relevant(scraped.title, excerpt, topic):
+                    logger.info(f"Transcript filter dropped: {scraped.title}")
+                    state.filtered_out_ids.append(stub.video_id)
+                    self.crawl_state.save(state_key, state)
+                    if cfg.sleep_seconds:
+                        time.sleep(cfg.sleep_seconds)
+                    continue
+
+            result = self._save_scraped(scraped, user_notes=None)
+            if result.success and result.title:
+                state.created_titles.append(result.title)
+            elif not result.success:
+                state.errors.append(f"{stub.title}: {result.error}")
+                logger.warning(f"Crawl video failed ({stub.url}): {result.error}")
+            state.processed_ids.append(stub.video_id)
+            self.crawl_state.save(state_key, state)
+
+            if cfg.sleep_seconds:
+                time.sleep(cfg.sleep_seconds)
+
+        if progress_callback:
+            try:
+                progress_callback(total, total, None)
+            except Exception:
+                logger.exception("Progress callback raised at completion")
+
+        index_path = self.vault_writer.write_channel_index(
+            channel_name=channel,
+            date_from=date_from,
+            date_to=date_to,
+            topic=topic,
+            note_titles=state.created_titles,
+            skipped=state.skipped_titles,
+        )
+        summary = (
+            f"Crawl done for {channel}: {len(state.created_titles)} new, "
+            f"{len(state.skipped_titles)} skipped, "
+            f"{len(state.filtered_out_ids)} filtered out, "
+            f"{len(state.errors)} failed.\nIndex: `{index_path.name}`"
+        )
+        # Clear state once the run completed end-to-end.
+        self.crawl_state.clear(state_key)
+        return ProcessingResult(url=url, success=True, message=summary)
+
+    def _process_channel_crawl(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        """/crawl <url> ... → batch-bookmark a channel (Telegram entry point)."""
+        channel = self._channel_name_from_url(cmd.url) if cmd.url else "channel"
+        notify = self.config.telegram.send_notifications and bool(cmd.url)
+        progress_id: int | None = None
+
+        def callback(done: int, total: int, current: str | None) -> None:
+            nonlocal progress_id
+            if not notify:
+                return
+            text = self._render_progress_bar(channel, done, total, current)
+            if progress_id is None:
+                progress_id = self.telegram.send_message_get_id(message.chat_id, text)
+            else:
+                self.telegram.edit_message(message.chat_id, progress_id, text)
+
+        return self.run_channel_crawl(
+            url=cmd.url,
+            date_from=cmd.crawl_from,
+            date_to=cmd.crawl_to,
+            topic=cmd.crawl_topic,
+            progress_callback=callback if notify else None,
+        )
+
     def _process_question(self, cmd: ParsedCommand, _: TelegramMessage) -> ProcessingResult:
         """Reply to bot message → append question to that note"""
         try:
@@ -391,6 +599,7 @@ class Processor:
         "project_todo": "_process_project_todo",
         "project_note": "_process_project_note",
         "event": "_process_event",
+        "channel_crawl": "_process_channel_crawl",
         "question": "_process_question",
         "inbox": "_process_inbox",
     }

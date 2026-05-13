@@ -144,6 +144,42 @@ class TelegramQueue:
             print(f"Error sending Telegram notification: {e}")
             return False
 
+    def send_message_get_id(self, chat_id: int, text: str) -> int | None:
+        """Send a message and return its message_id (for later edits). None on failure."""
+        try:
+            response = requests.post(
+                f"{self.base_url}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.json().get("result", {}).get("message_id")
+        except requests.RequestException as e:
+            print(f"Error sending Telegram message: {e}")
+            return None
+
+    def edit_message(self, chat_id: int, message_id: int, text: str) -> bool:
+        """Edit an existing bot message in-place (used for progress bars)."""
+        try:
+            response = requests.post(
+                f"{self.base_url}/editMessageText",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                },
+                timeout=10,
+            )
+            # Telegram rejects edits with identical content; treat that as success.
+            if response.status_code == 400 and "not modified" in response.text.lower():
+                return True
+            response.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            print(f"Error editing Telegram message: {e}")
+            return False
+
     def send_processing_started(self, chat_id: int, url: str) -> bool:
         """Notify user that processing has started."""
         return self.send_notification(chat_id, f"Processing: {url}")

@@ -313,6 +313,51 @@ cssclasses:
         logger.info(f"Appended question to: {target}")
         return True
 
+    # ── Channel crawls ─────────────────────────────────────────────────────────
+
+    def write_channel_index(
+        self,
+        channel_name: str,
+        date_from: date | None,
+        date_to: date | None,
+        topic: str | None,
+        note_titles: list[str],
+        skipped: list[str] | None = None,
+    ) -> Path:
+        """Write an index page listing every note created by a /crawl run."""
+        sanitized_channel = _sanitize_filename(channel_name) or "channel"
+        from_str = date_from.isoformat() if date_from else "all"
+        to_str = date_to.isoformat() if date_to else "all"
+        filename = f"{sanitized_channel}-{from_str}-{to_str}.md"
+        path = self.vault_path / "04 Indexes" / "Channels" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        lines = [
+            "---",
+            f"title: {channel_name} crawl ({from_str} → {to_str})",
+            f"created: {date.today().isoformat()}",
+            "tags:",
+            "  - channel-index",
+            "---",
+            "",
+            f"# {channel_name}",
+            "",
+            f"- Range: {from_str} → {to_str}",
+        ]
+        if topic:
+            lines.append(f"- Topic filter: {topic}")
+        lines.append(f"- Videos saved: {len(note_titles)}")
+        lines.append("")
+        lines.append("## Notes")
+        lines.extend(f"- [[{t}]]" for t in note_titles)
+        if skipped:
+            lines.append("")
+            lines.append("## Skipped (already in vault)")
+            lines.extend(f"- [[{t}]]" for t in skipped)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info(f"Wrote channel index: {path}")
+        return path
+
     # ── Calendar events ────────────────────────────────────────────────────────
 
     def create_event(self, title: str, dt: datetime, duration_minutes: int = 60) -> Path | None:

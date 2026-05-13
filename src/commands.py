@@ -19,6 +19,9 @@ class ParsedCommand:
     event_datetime: datetime | None = None
     reply_to_title: str | None = None
     is_raw: bool = False  # True for /note <url> — skip AI processing
+    crawl_from: date | None = None
+    crawl_to: date | None = None
+    crawl_topic: str | None = None
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"{}|\\^`\[\]]+")
@@ -108,6 +111,45 @@ def _parse_event_datetime(text: str) -> tuple[str, datetime | None]:
     return text, None
 
 
+_CRAWL_DATE_RE = re.compile(r"\b(from|to):(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_CRAWL_TOPIC_QUOTED_RE = re.compile(r'\btopic:"([^"]+)"', re.IGNORECASE)
+_CRAWL_TOPIC_BARE_RE = re.compile(r"\btopic:(\S+)", re.IGNORECASE)
+
+
+def _parse_crawl_args(body: str) -> tuple[str | None, date | None, date | None, str | None]:
+    """Extract url + from/to/topic kwargs from /crawl body. Returns (url, from, to, topic)."""
+    url_match = _URL_PATTERN.search(body)
+    url = url_match.group(0) if url_match else None
+    if url:
+        body = (body[: url_match.start()] + body[url_match.end():]).strip()
+
+    date_from: date | None = None
+    date_to: date | None = None
+    for match in _CRAWL_DATE_RE.finditer(body):
+        try:
+            parsed = datetime.strptime(match.group(2), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if match.group(1).lower() == "from":
+            date_from = parsed
+        else:
+            date_to = parsed
+    body = _CRAWL_DATE_RE.sub("", body).strip()
+
+    topic: str | None = None
+    quoted = _CRAWL_TOPIC_QUOTED_RE.search(body)
+    if quoted:
+        topic = quoted.group(1).strip()
+        body = _CRAWL_TOPIC_QUOTED_RE.sub("", body).strip()
+    else:
+        bare = _CRAWL_TOPIC_BARE_RE.search(body)
+        if bare:
+            topic = bare.group(1).strip()
+            body = _CRAWL_TOPIC_BARE_RE.sub("", body).strip()
+
+    return url, date_from, date_to, topic
+
+
 def _extract_reply_title(reply_text: str | None) -> str | None:
     """Extract note title from a bot success message like 'Created note: *Title*'."""
     if not reply_text:
@@ -134,6 +176,7 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         project_todo    — /project X todo    → 07 Projects/X/Todo.md
         project_note    — /project X         → 07 Projects/X/Notes.md
         event           — /event             → ICS + daily note
+        channel_crawl   — /crawl <url> ...   → batch-bookmark a channel's videos
         inbox           — plain text default → 08 Trackers/Inbox.md
     """
     text = text.strip()
@@ -225,6 +268,19 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
                 )
             return ParsedCommand(command_type="project_note", text=remainder, project=project)
         return ParsedCommand(command_type="inbox", text=text)
+
+    # /crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:"..."]
+    if text.lower().startswith("/crawl"):
+        body = text[6:].strip()
+        url, date_from, date_to, topic = _parse_crawl_args(body)
+        return ParsedCommand(
+            command_type="channel_crawl",
+            text=body,
+            url=url,
+            crawl_from=date_from,
+            crawl_to=date_to,
+            crawl_topic=topic,
+        )
 
     # /event
     if text.lower().startswith("/event"):

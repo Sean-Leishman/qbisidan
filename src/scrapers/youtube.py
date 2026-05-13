@@ -14,8 +14,15 @@ class YouTubeScraper(BaseScraper):
         r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]+)",
     ]
 
-    def __init__(self, transcript_languages: list[str] | None = None):
+    def __init__(
+        self,
+        transcript_languages: list[str] | None = None,
+        cookies_from_browser: str | None = None,
+        cookies_file: str | None = None,
+    ):
         self.transcript_languages = transcript_languages or ["en", "en-US", "en-GB"]
+        self.cookies_from_browser = cookies_from_browser
+        self.cookies_file = cookies_file
 
     def can_handle(self, url: str) -> bool:
         """Check if URL is a YouTube video."""
@@ -29,32 +36,37 @@ class YouTubeScraper(BaseScraper):
                 return match.group(1)
         return None
 
-    def _get_metadata(self, url: str) -> dict:
-        """Get video metadata using yt-dlp."""
-        try:
-            import yt_dlp
+    def _get_metadata(
+        self,
+        url: str,
+        cookies_from_browser: str | None = None,
+        cookies_file: str | None = None,
+    ) -> dict:
+        """Get video metadata using yt-dlp. Raises on failure so callers can fail loudly."""
+        import yt_dlp
 
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "extract_flat": False,
-                "skip_download": True,
+        ydl_opts: dict = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "skip_download": True,
+        }
+        if cookies_file:
+            ydl_opts["cookiefile"] = cookies_file
+        elif cookies_from_browser:
+            ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return {
+                "title": info.get("title", "Untitled"),
+                "author": info.get("uploader", info.get("channel")),
+                "upload_date": info.get("upload_date"),  # YYYYMMDD format
+                "description": info.get("description"),
+                "thumbnail": info.get("thumbnail"),
+                "duration": info.get("duration"),
+                "view_count": info.get("view_count"),
             }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return {
-                    "title": info.get("title", "Untitled"),
-                    "author": info.get("uploader", info.get("channel")),
-                    "upload_date": info.get("upload_date"),  # YYYYMMDD format
-                    "description": info.get("description"),
-                    "thumbnail": info.get("thumbnail"),
-                    "duration": info.get("duration"),
-                    "view_count": info.get("view_count"),
-                }
-        except Exception as e:
-            print(f"Error getting YouTube metadata: {e}")
-            return {}
 
     def _get_transcript(self, video_id: str) -> str:
         """Get video transcript using youtube-transcript-api."""
@@ -89,8 +101,12 @@ class YouTubeScraper(BaseScraper):
         if not video_id:
             raise ValueError(f"Could not extract video ID from URL: {url}")
 
-        # Get metadata
-        metadata = self._get_metadata(url)
+        # Get metadata (raises on failure — bot detection / takedown / network).
+        metadata = self._get_metadata(
+            url,
+            cookies_from_browser=self.cookies_from_browser,
+            cookies_file=self.cookies_file,
+        )
 
         # Parse upload date
         published = None

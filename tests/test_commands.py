@@ -206,6 +206,47 @@ class TestQuestionCommand:
         assert cmd.command_type == "inbox"
 
 
+class TestCrawlCommand:
+    def test_crawl_url_only(self):
+        cmd = parse_message("/crawl https://youtube.com/@lex")
+        assert cmd.command_type == "channel_crawl"
+        assert cmd.url == "https://youtube.com/@lex"
+        assert cmd.crawl_from is None
+        assert cmd.crawl_to is None
+        assert cmd.crawl_topic is None
+
+    def test_crawl_with_date_range(self):
+        cmd = parse_message(
+            "/crawl https://youtube.com/@lex from:2026-01-01 to:2026-05-01"
+        )
+        assert cmd.command_type == "channel_crawl"
+        assert cmd.crawl_from == date(2026, 1, 1)
+        assert cmd.crawl_to == date(2026, 5, 1)
+
+    def test_crawl_with_quoted_topic(self):
+        cmd = parse_message('/crawl https://youtube.com/@lex topic:"AI safety"')
+        assert cmd.command_type == "channel_crawl"
+        assert cmd.crawl_topic == "AI safety"
+
+    def test_crawl_with_bare_topic(self):
+        cmd = parse_message("/crawl https://youtube.com/@lex topic:rust")
+        assert cmd.crawl_topic == "rust"
+
+    def test_crawl_all_args(self):
+        cmd = parse_message(
+            '/crawl https://youtube.com/@lex from:2026-01-01 to:2026-05-01 topic:"AI safety"'
+        )
+        assert cmd.url == "https://youtube.com/@lex"
+        assert cmd.crawl_from == date(2026, 1, 1)
+        assert cmd.crawl_to == date(2026, 5, 1)
+        assert cmd.crawl_topic == "AI safety"
+
+    def test_crawl_missing_url(self):
+        cmd = parse_message("/crawl topic:rust")
+        assert cmd.command_type == "channel_crawl"
+        assert cmd.url is None
+
+
 class TestInboxFallback:
     def test_plain_text_goes_to_inbox(self):
         cmd = parse_message("Just a random thought")

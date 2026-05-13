@@ -5,14 +5,16 @@ This script polls Telegram for bookmark URLs, scrapes content,
 generates AI summaries, and creates Obsidian notes.
 
 Usage:
-    python main.py              # Run once (for cron)
-    python main.py --watch      # Run continuously (watch mode)
-    python main.py --test URL   # Test with a specific URL
+    python main.py                      # Run once (for cron)
+    python main.py --watch              # Run continuously (watch mode)
+    python main.py --test URL           # Test with a specific URL
+    python main.py --crawl CHANNEL_URL  # Crawl a channel (no Telegram)
 """
 import argparse
 import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Add src to path for imports
@@ -75,6 +77,53 @@ def test_url(config: Config, url: str) -> int:
         return 1
 
 
+def _parse_iso_date(raw: str | None):
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise SystemExit(f"Invalid date {raw!r}: expected YYYY-MM-DD") from e
+
+
+def run_crawl(
+    config: Config,
+    url: str,
+    crawl_from: str | None,
+    crawl_to: str | None,
+    crawl_topic: str | None,
+    no_resume: bool,
+) -> int:
+    """CLI-driven channel crawl with stdout progress bar."""
+    processor = Processor(config)
+
+    def progress(done: int, total: int, current: str | None) -> None:
+        bar_width = 30
+        ratio = (done / total) if total else 0
+        filled = int(ratio * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        suffix = f" — {current[:60]}" if current else ""
+        # \r to overwrite the line; \n only at completion.
+        end = "\n" if done == total else ""
+        sys.stdout.write(f"\r[{bar}] {done}/{total}{suffix}{end}")
+        sys.stdout.flush()
+
+    result = processor.run_channel_crawl(
+        url=url,
+        date_from=_parse_iso_date(crawl_from),
+        date_to=_parse_iso_date(crawl_to),
+        topic=crawl_topic,
+        progress_callback=progress,
+        resume=not no_resume,
+    )
+    print()  # newline after the bar
+    if result.success:
+        print(result.message)
+        return 0
+    print(f"Failed: {result.error}")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Obsidian Helper - Automated bookmark processing"
@@ -101,6 +150,31 @@ def main() -> int:
         help="Test processing a specific URL",
     )
     parser.add_argument(
+        "--crawl",
+        metavar="CHANNEL_URL",
+        help="Crawl a YouTube channel's videos (no Telegram needed)",
+    )
+    parser.add_argument(
+        "--crawl-from",
+        metavar="YYYY-MM-DD",
+        help="Earliest upload date for --crawl",
+    )
+    parser.add_argument(
+        "--crawl-to",
+        metavar="YYYY-MM-DD",
+        help="Latest upload date for --crawl",
+    )
+    parser.add_argument(
+        "--crawl-topic",
+        metavar="TOPIC",
+        help="Topic filter for --crawl (LLM filters titles/transcripts)",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any saved crawl state and start fresh",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -118,8 +192,9 @@ def main() -> int:
         logger.error(f"Failed to load config: {e}")
         return 1
 
-    # Validate config
-    if not config.telegram.bot_token:
+    # Validate config — Telegram only needed for poll/watch modes.
+    needs_telegram = not (args.test or args.crawl)
+    if needs_telegram and not config.telegram.bot_token:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return 1
     if not config.ai.api_key:
@@ -127,6 +202,11 @@ def main() -> int:
         return 1
 
     # Run appropriate mode
+    if args.crawl:
+        return run_crawl(
+            config, args.crawl, args.crawl_from, args.crawl_to,
+            args.crawl_topic, args.no_resume,
+        )
     if args.test:
         return test_url(config, args.test)
     elif args.watch:

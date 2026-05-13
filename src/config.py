@@ -55,6 +55,16 @@ class YouTubeConfig:
     transcript_languages: list[str] = field(
         default_factory=lambda: ["en", "en-US", "en-GB"]
     )
+    # Pass a browser name (e.g. "chrome", "firefox", "edge") to yt-dlp so it can
+    # reuse your logged-in cookies. Avoids the "Sign in to confirm you're not a bot"
+    # error that hits during heavy crawls. Only works when the browser profile is
+    # readable from this machine — in WSL pointing at Windows Chrome won't decrypt
+    # cookies; use `cookies_file` instead.
+    cookies_from_browser: str | None = None
+    # Path to a Netscape-format cookies.txt file (export with a "Get cookies.txt"
+    # browser extension while logged into YouTube). Takes precedence over
+    # cookies_from_browser when both are set.
+    cookies_file: str | None = None
 
 
 @dataclass
@@ -74,6 +84,17 @@ class VaultWriterConfig:
 
 
 @dataclass
+class ChannelCrawlConfig:
+    """Configuration for /crawl <channel_url> command."""
+
+    max_videos: int = 25  # cap on videos actually processed per crawl
+    title_filter_threshold: int = 25  # invoke LLM title filter only over this many
+    sleep_seconds: float = 2.0  # between videos, to be polite to AI provider
+    transcript_filter_chars: int = 1500  # chars of description+transcript used in stage-2 filter
+    state_file: str = "data/crawl_state.json"
+
+
+@dataclass
 class Config:
     vault_path: Path
     telegram: TelegramConfig
@@ -81,6 +102,7 @@ class Config:
     output_folders: OutputFoldersConfig
     youtube: YouTubeConfig
     vault_writer: VaultWriterConfig = field(default_factory=VaultWriterConfig)
+    channel_crawl: ChannelCrawlConfig = field(default_factory=ChannelCrawlConfig)
     routing_categories: list[RoutingCategory] = field(default_factory=list)
 
     def get_routing_category_names(self) -> list[str]:
@@ -138,10 +160,19 @@ class Config:
                 transcript_languages=data["youtube"].get(
                     "transcript_languages", ["en", "en-US", "en-GB"]
                 ),
+                cookies_from_browser=data["youtube"].get("cookies_from_browser") or None,
+                cookies_file=data["youtube"].get("cookies_file") or None,
             ),
             vault_writer=VaultWriterConfig(
                 daily_notes_folder=data.get("vault_writer", {}).get("daily_notes_folder", "06 Daily Notes"),
                 ics_folder=data.get("vault_writer", {}).get("ics_folder", ""),
+            ),
+            channel_crawl=ChannelCrawlConfig(
+                max_videos=data.get("channel_crawl", {}).get("max_videos", 25),
+                title_filter_threshold=data.get("channel_crawl", {}).get("title_filter_threshold", 25),
+                sleep_seconds=data.get("channel_crawl", {}).get("sleep_seconds", 2.0),
+                transcript_filter_chars=data.get("channel_crawl", {}).get("transcript_filter_chars", 1500),
+                state_file=data.get("channel_crawl", {}).get("state_file", "data/crawl_state.json"),
             ),
             routing_categories=[
                 RoutingCategory(name=cat["name"], folder=cat["folder"])

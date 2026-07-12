@@ -1,9 +1,11 @@
-"""Tests for TelegramQueue activity tracking."""
+"""Tests for TelegramQueue activity tracking, inline keyboards, and callback polling."""
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from src.telegram_queue import TelegramQueue
 
@@ -73,3 +75,178 @@ class TestActivityLogging:
         queue.log_activity("note")
         today_stats = queue.get_today_stats()
         assert today_stats.get("note", 0) == 1  # only today's entry
+
+
+def _mock_response(result, status_code=200):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = {"result": result}
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestInlineKeyboardMethods:
+    def test_send_buttons_returns_message_id(self, queue):
+        resp = _mock_response({"message_id": 42})
+        keyboard = [[{"text": "Start", "callback_data": "start"}]]
+        with patch("src.telegram_queue.requests.post", return_value=resp) as mock_post:
+            message_id = queue.send_buttons(123, "pick one", keyboard)
+
+        assert message_id == 42
+        assert "sendMessage" in mock_post.call_args[0][0]
+        sent_markup = mock_post.call_args[1]["json"]["reply_markup"]
+        assert sent_markup == {"inline_keyboard": keyboard}
+
+    def test_send_buttons_returns_none_on_failure(self, queue):
+        with patch("src.telegram_queue.requests.post", side_effect=requests.RequestException("boom")):
+            assert queue.send_buttons(123, "text", [[]]) is None
+
+    def test_edit_message_reply_markup_success(self, queue):
+        resp = _mock_response({})
+        keyboard = [[{"text": "x", "callback_data": "v0"}]]
+        with patch("src.telegram_queue.requests.post", return_value=resp) as mock_post:
+            ok = queue.edit_message_reply_markup(123, 42, keyboard)
+
+        assert ok is True
+        assert "editMessageReplyMarkup" in mock_post.call_args[0][0]
+        assert mock_post.call_args[1]["json"]["reply_markup"] == {"inline_keyboard": keyboard}
+
+    def test_answer_callback_query_success(self, queue):
+        resp = _mock_response({})
+        with patch("src.telegram_queue.requests.post", return_value=resp) as mock_post:
+            ok = queue.answer_callback_query("cbq-123")
+
+        assert ok is True
+        assert "answerCallbackQuery" in mock_post.call_args[0][0]
+        assert mock_post.call_args[1]["json"]["callback_query_id"] == "cbq-123"
+
+
+class TestGetPendingMessagesSkipsCallbacks:
+    def test_callback_query_updates_are_not_returned_as_messages(self, queue):
+        updates = [
+            {"update_id": 10, "callback_query": {"id": "x", "data": "v0", "message": {"message_id": 1}}},
+            {
+                "update_id": 11,
+                "message": {"message_id": 2, "chat": {"id": 123}, "text": "hi", "date": 1},
+            },
+        ]
+        resp = _mock_response(updates)
+        with patch("src.telegram_queue.requests.get", return_value=resp):
+            messages = queue.get_pending_messages()
+
+        assert len(messages) == 1
+        assert messages[0].text == "hi"
+        # last_update_id must still advance past the callback_query update, or
+        # get_pending_messages would refetch (and re-skip) it forever.
+        assert queue.last_update_id == 11
+
+
+class TestWaitForCallback:
+    def test_buffers_non_callback_message_for_next_get_pending_messages(self, queue):
+        """The single most subtle requirement: a button tap must not silently
+        eat a message the user sent while the manifest was on screen."""
+        batch = [
+            {
+                "update_id": 101,
+                "message": {
+                    "message_id": 5001,
+                    "chat": {"id": 123},
+                    "text": "hello while waiting",
+                    "date": 1000,
+                },
+            },
+            {
+                "update_id": 102,
+                "callback_query": {"id": "cbq1", "data": "start", "message": {"message_id": 777}},
+            },
+        ]
+        get_resp = _mock_response(batch)
+        post_resp = _mock_response({})
+
+        # Consume like the real caller does: stop at the first terminal tap
+        # rather than exhausting the generator (which would poll forever).
+        taps = []
+        with patch("src.telegram_queue.requests.get", return_value=get_resp), \
+             patch("src.telegram_queue.requests.post", return_value=post_resp) as mock_post:
+            for tap in queue.wait_for_callback(chat_id=123, message_id=777, timeout=5):
+                taps.append(tap)
+                if tap in ("start", "cancel"):
+                    break
+
+        assert taps == ["start"]
+        mock_post.assert_called_once()  # answer_callback_query for the "start" tap
+        assert queue.last_update_id == 102  # advanced past the whole batch
+
+        # Telegram will not resend update 101 (offset moved past it) — the
+        # buffered copy must be what get_pending_messages() returns instead.
+        empty_resp = _mock_response([])
+        with patch("src.telegram_queue.requests.get", return_value=empty_resp):
+            messages = queue.get_pending_messages()
+
+        assert len(messages) == 1
+        assert messages[0].text == "hello while waiting"
+        assert messages[0].message_id == 5001
+
+    def test_buffered_message_survives_process_exit(self, queue, tmp_path):
+        """run-once/cron exits as soon as the crawl ends. last_update_id is already
+        saved past the buffered message, so Telegram will never resend it — the
+        buffer MUST outlive the process or the message is lost permanently."""
+        batch = [
+            {
+                "update_id": 201,
+                "message": {
+                    "message_id": 6001,
+                    "chat": {"id": 123},
+                    "text": "sent while manifest was open",
+                    "date": 1000,
+                },
+            },
+            {
+                "update_id": 202,
+                "callback_query": {"id": "cbq1", "data": "start", "message": {"message_id": 777}},
+            },
+        ]
+        with patch("src.telegram_queue.requests.get", return_value=_mock_response(batch)), \
+             patch("src.telegram_queue.requests.post", return_value=_mock_response({})):
+            for tap in queue.wait_for_callback(chat_id=123, message_id=777, timeout=5):
+                if tap == "start":
+                    break
+
+        # Process dies here. A fresh queue reads the same state file — as the next
+        # cron run would.
+        reborn = TelegramQueue(
+            bot_token="t", allowed_chat_ids=[123], state_file=str(queue.state_file)
+        )
+        with patch("src.telegram_queue.requests.get", return_value=_mock_response([])):
+            messages = reborn.get_pending_messages()
+
+        assert [m.text for m in messages] == ["sent while manifest was open"]
+
+        # And it is not redelivered forever.
+        with patch("src.telegram_queue.requests.get", return_value=_mock_response([])):
+            assert reborn.get_pending_messages() == []
+
+    def test_stops_iterating_once_terminal_tap_consumed(self, queue):
+        """Taps on a different message_id (stale buttons) are answered but not yielded."""
+        batch = [
+            {
+                "update_id": 201,
+                "callback_query": {"id": "cbq-stale", "data": "v0", "message": {"message_id": 999}},
+            },
+            {
+                "update_id": 202,
+                "callback_query": {"id": "cbq-real", "data": "v0", "message": {"message_id": 777}},
+            },
+        ]
+        get_resp = _mock_response(batch)
+        post_resp = _mock_response({})
+
+        taps = []
+        with patch("src.telegram_queue.requests.get", return_value=get_resp), \
+             patch("src.telegram_queue.requests.post", return_value=post_resp) as mock_post:
+            for tap in queue.wait_for_callback(chat_id=123, message_id=777, timeout=5):
+                taps.append(tap)
+                break  # caller only cares about the first tap here
+
+        assert taps == ["v0"]  # only the tap for our message_id is yielded
+        assert mock_post.call_count == 2  # but both taps get answered

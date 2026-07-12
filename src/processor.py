@@ -20,6 +20,15 @@ from .telegram_queue import TelegramMessage, TelegramQueue
 
 logger = logging.getLogger(__name__)
 
+# Model-choice manifest: cycling order for a single video's override button,
+# and for the playlist-wide default-model button (no skip/default there).
+_MODEL_CYCLE = ["default", "gemini", "groq", "claude", "skip"]
+_DEFAULT_CYCLE = ["gemini", "groq", "claude"]
+_MODEL_LABELS = {"default": "default", "gemini": "Gemini", "groq": "Groq", "claude": "Claude", "skip": "skip"}
+# Telegram caps inline keyboards at 100 buttons. Reserve one for the default-model
+# row and two for Start/Cancel.
+_MANIFEST_MAX_VIDEOS = 97
+
 
 @dataclass
 class ProcessingResult:
@@ -54,6 +63,10 @@ class Processor:
             max_tokens=config.ai.max_tokens,
             routing_categories=config.get_routing_category_names(),
         )
+        # Per-provider summarizers, for the crawl manifest's per-video model
+        # overrides. Seeded with the one built above so the config-default
+        # provider never gets built twice.
+        self._summarizers: dict[str, Summarizer] = {config.ai.provider: self.summarizer}
         self.question_agent = QuestionAgent(
             provider=config.ai.provider,
             api_key=config.ai.api_key,
@@ -127,7 +140,9 @@ class Processor:
         "*Calendar*\n"
         "`/event <title> <YYYY-MM-DD> <HH:MM>` — ICS + daily note\n\n"
         "*Channel crawl*\n"
-        "`/crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]`\n\n"
+        "`/crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]`\n"
+        "_Shows a manifest to pick a default model and override a few videos —_\n"
+        "_tap Start to run, Cancel to abort, or leave it — it proceeds on the default model after a timeout._\n\n"
         "*Date syntax:* `@today` `@tomorrow` `@friday` `@2026-05-01`\n\n"
         "`/search <query>` — search vault notes\n"
         "`/status` — today's capture summary\n"
@@ -183,11 +198,33 @@ class Processor:
         self.telegram.send_notification(message.chat_id, "\n".join(lines))
         return ProcessingResult(url=None, success=True)
 
-    def _save_scraped(self, scraped, user_notes: str | None) -> ProcessingResult:
-        """Summarise pre-scraped content and write the vault note. Shared by URL + crawl paths."""
+    def _summarizer_for(self, provider: str) -> Summarizer:
+        """Cached per-provider Summarizer, so the crawl manifest's model overrides
+        don't rebuild an AI client for every video."""
+        cached = self._summarizers.get(provider)
+        if cached is None:
+            cached = Summarizer(
+                provider=provider,
+                api_key=self.config.ai.key_for(provider),
+                model=self.config.ai.model_for(provider),
+                max_tokens=self.config.ai.max_tokens,
+                routing_categories=self.config.get_routing_category_names(),
+            )
+            self._summarizers[provider] = cached
+        return cached
+
+    def _save_scraped(
+        self, scraped, user_notes: str | None, provider: str | None = None
+    ) -> ProcessingResult:
+        """Summarise pre-scraped content and write the vault note. Shared by URL + crawl paths.
+
+        `provider` overrides the configured AI provider for this one item (crawl
+        manifest per-video choice); None uses the config default.
+        """
         url = scraped.url
         try:
-            summary = self.summarizer.summarize(scraped, user_notes=user_notes)
+            summarizer = self._summarizer_for(provider) if provider else self.summarizer
+            summary = summarizer.summarize(scraped, user_notes=user_notes)
             logger.info(f"AI category: {summary.category}, tags: {summary.tags}")
 
             if scraped.content_type == "youtube":
@@ -395,6 +432,89 @@ class Processor:
             line += f"\nCurrent: {current[:60]}"
         return line
 
+    # ── Model-choice manifest ────────────────────────────────────────────────
+
+    def _build_manifest_keyboard(
+        self, stubs: list, default_provider: str, choices: dict[str, str]
+    ) -> list[list[dict]]:
+        rows = [[{
+            "text": f"Default model: [{_MODEL_LABELS[default_provider]} ▾]",
+            "callback_data": "d",
+        }]]
+        for idx, stub in enumerate(stubs):
+            choice = choices.get(stub.video_id, "default")
+            # callback_data is capped at 64 bytes by Telegram — index only, never the title.
+            rows.append([{
+                "text": f"{idx + 1}. {stub.title[:40]}  [{_MODEL_LABELS[choice]}]",
+                "callback_data": f"v{idx}",
+            }])
+        rows.append([
+            {"text": "Start", "callback_data": "start"},
+            {"text": "Cancel", "callback_data": "cancel"},
+        ])
+        return rows
+
+    def _run_model_manifest(
+        self, chat_id: int, display_name: str, stubs: list, timeout: float
+    ) -> tuple[str, dict[str, str]] | None:
+        """Show one editable manifest message; block until Start, Cancel, or timeout.
+
+        Returns (default_provider, {video_id: choice}) after Start — choice is one
+        of gemini/groq/claude/skip for videos the user touched, "default" videos are
+        simply absent. Returns None if the user cancelled (crawl must abort, write
+        nothing). On timeout, returns (config default provider, {}) — untapped taps
+        before a timeout are discarded; only Start commits them.
+        """
+        config_default = self.config.ai.provider if self.config.ai.provider in _DEFAULT_CYCLE else "gemini"
+
+        manifest_stubs = stubs
+        if len(stubs) > _MANIFEST_MAX_VIDEOS:
+            logger.warning(
+                f"Manifest truncated to {_MANIFEST_MAX_VIDEOS} of {len(stubs)} videos "
+                "(Telegram's 100-button inline keyboard cap); the rest run on the default model"
+            )
+            manifest_stubs = stubs[:_MANIFEST_MAX_VIDEOS]
+
+        default_provider = config_default
+        choices: dict[str, str] = {}
+        text = f'*{display_name}* — {len(stubs)} videos\nTap a video to override its model, then *Start*.'
+        keyboard = self._build_manifest_keyboard(manifest_stubs, default_provider, choices)
+        message_id = self.telegram.send_buttons(chat_id, text, keyboard)
+        if message_id is None:
+            logger.warning("Could not show crawl manifest; proceeding on config default")
+            return config_default, {}
+
+        started = False
+        for data in self.telegram.wait_for_callback(chat_id, message_id, timeout):
+            if data == "start":
+                started = True
+                break
+            if data == "cancel":
+                return None
+            if data == "d":
+                i = _DEFAULT_CYCLE.index(default_provider)
+                default_provider = _DEFAULT_CYCLE[(i + 1) % len(_DEFAULT_CYCLE)]
+            elif data.startswith("v"):
+                try:
+                    stub = manifest_stubs[int(data[1:])]
+                except (ValueError, IndexError):
+                    continue
+                current = choices.get(stub.video_id, "default")
+                nxt = _MODEL_CYCLE[(_MODEL_CYCLE.index(current) + 1) % len(_MODEL_CYCLE)]
+                if nxt == "default":
+                    choices.pop(stub.video_id, None)
+                else:
+                    choices[stub.video_id] = nxt
+            else:
+                continue
+            keyboard = self._build_manifest_keyboard(manifest_stubs, default_provider, choices)
+            self.telegram.edit_message_reply_markup(chat_id, message_id, keyboard)
+
+        if not started:
+            logger.info("Crawl manifest timed out with no Start tap; proceeding on config default")
+            return config_default, {}
+        return default_provider, choices
+
     def run_channel_crawl(
         self,
         url: str,
@@ -403,11 +523,16 @@ class Processor:
         topic: str | None = None,
         progress_callback=None,
         resume: bool = True,
+        chat_id: int | None = None,
     ) -> ProcessingResult:
         """Run a channel crawl end-to-end. Used by both Telegram and CLI entry points.
 
         progress_callback(done, total, current_title) is called before each video. If None,
         no progress is reported.
+
+        chat_id, when set, shows the Telegram model-choice manifest before crawling
+        and blocks for it — only the Telegram entry point passes this. The CLI path
+        leaves it None and always runs on the configured default model.
         """
         if not url:
             return ProcessingResult(
@@ -448,6 +573,19 @@ class Processor:
             logger.info(f"Capping crawl at {cfg.max_videos} (had {len(stubs)})")
             stubs = stubs[: cfg.max_videos]
 
+        default_provider = None
+        overrides: dict[str, str] = {}
+        if chat_id is not None:
+            display_name = self.channel_enumerator.last_title or channel
+            manifest = self._run_model_manifest(chat_id, display_name, stubs, cfg.manifest_timeout_seconds)
+            if manifest is None:
+                logger.info(f"Crawl cancelled via manifest for {channel}")
+                return ProcessingResult(
+                    url=url, success=True,
+                    message=f"Crawl cancelled for {channel}. Nothing written.",
+                )
+            default_provider, overrides = manifest
+
         total = len(stubs)
         for idx, stub in enumerate(stubs, start=1):
             if progress_callback:
@@ -466,6 +604,14 @@ class Processor:
                 state.processed_ids.append(stub.video_id)
                 self.crawl_state.save(state_key, state)
                 continue
+
+            choice = overrides.get(stub.video_id, "default")
+            if choice == "skip":
+                logger.info(f"Manifest skip: {stub.title}")
+                state.filtered_out_ids.append(stub.video_id)
+                self.crawl_state.save(state_key, state)
+                continue
+            chosen_provider = default_provider if choice == "default" else choice
 
             # Stage 2: transcript-level topic filter. Scrape once, then decide.
             scraper = self._get_scraper(stub.url)
@@ -499,7 +645,7 @@ class Processor:
                         time.sleep(cfg.sleep_seconds)
                     continue
 
-            result = self._save_scraped(scraped, user_notes=None)
+            result = self._save_scraped(scraped, user_notes=None, provider=chosen_provider)
             if result.success and result.title:
                 state.created_titles.append(result.title)
             elif not result.success:
@@ -557,6 +703,7 @@ class Processor:
             date_to=cmd.crawl_to,
             topic=cmd.crawl_topic,
             progress_callback=callback if notify else None,
+            chat_id=message.chat_id if notify else None,
         )
 
     def _process_question(self, cmd: ParsedCommand, _: TelegramMessage) -> ProcessingResult:

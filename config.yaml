@@ -64,3 +64,4 @@ channel_crawl:
   sleep_seconds: 2.0              # pause between videos
   transcript_filter_chars: 1500   # chars of desc+transcript used in stage-2 filter
   state_file: "data/crawl_state.json"
+  manifest_timeout_seconds: 120   # how long the Telegram model-choice manifest waits for Start/Cancel

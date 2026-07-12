@@ -24,3 +24,7 @@ data/telegram_state.json
 
 # Config with secrets (use config.yaml.example)
 # config.yaml  # Uncomment if you want to ignore config
+
+# Claude Code local settings + temp files
+.claude/settings.local.json
+.claude/*.tmp.*

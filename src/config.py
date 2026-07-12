@@ -25,21 +25,27 @@ class AIConfig:
     anthropic_model: str
     max_tokens: int = 1024
 
-    @property
-    def api_key(self) -> str:
-        if self.provider == "groq":
+    def key_for(self, provider: str) -> str:
+        if provider == "groq":
             return self.groq_api_key
-        if self.provider == "gemini":
+        if provider == "gemini":
             return self.gemini_api_key
         return self.anthropic_api_key
 
-    @property
-    def model(self) -> str:
-        if self.provider == "groq":
+    def model_for(self, provider: str) -> str:
+        if provider == "groq":
             return self.groq_model
-        if self.provider == "gemini":
+        if provider == "gemini":
             return self.gemini_model
         return self.anthropic_model
+
+    @property
+    def api_key(self) -> str:
+        return self.key_for(self.provider)
+
+    @property
+    def model(self) -> str:
+        return self.model_for(self.provider)
 
 
 @dataclass
@@ -92,6 +98,7 @@ class ChannelCrawlConfig:
     sleep_seconds: float = 2.0  # between videos, to be polite to AI provider
     transcript_filter_chars: int = 1500  # chars of description+transcript used in stage-2 filter
     state_file: str = "data/crawl_state.json"
+    manifest_timeout_seconds: float = 120.0  # how long the model-choice manifest waits for Start/Cancel
 
 
 @dataclass
@@ -173,6 +180,7 @@ class Config:
                 sleep_seconds=data.get("channel_crawl", {}).get("sleep_seconds", 2.0),
                 transcript_filter_chars=data.get("channel_crawl", {}).get("transcript_filter_chars", 1500),
                 state_file=data.get("channel_crawl", {}).get("state_file", "data/crawl_state.json"),
+                manifest_timeout_seconds=data.get("channel_crawl", {}).get("manifest_timeout_seconds", 120.0),
             ),
             routing_categories=[
                 RoutingCategory(name=cat["name"], folder=cat["folder"])

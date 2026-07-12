@@ -13,6 +13,7 @@ from .crawl_state import CrawlRunState, CrawlStateStore
 from .linker import NoteLinkEngine
 from .obsidian import ObsidianNoteGenerator
 from .scrapers import ChannelEnumerator, WebpageScraper, YouTubeScraper
+from .scrapers.channel import StaleCookiesError
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
 from .telegram_queue import TelegramMessage, TelegramQueue
@@ -426,7 +427,10 @@ class Processor:
         processed = set(state.processed_ids)
         filtered_out = set(state.filtered_out_ids)
 
-        stubs = self.channel_enumerator.list_videos(url, date_from=date_from, date_to=date_to)
+        try:
+            stubs = self.channel_enumerator.list_videos(url, date_from=date_from, date_to=date_to)
+        except StaleCookiesError as e:
+            return ProcessingResult(url=url, success=False, error=str(e))
         if not stubs:
             return ProcessingResult(
                 url=url, success=False,

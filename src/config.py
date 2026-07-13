@@ -52,6 +52,7 @@ class AIConfig:
 class OutputFoldersConfig:
     youtube: str = "02 Sources/Videos"
     article: str = "02 Sources/Articles"
+    instagram: str = "02 Sources/Reels"
     default: str = "Clippings"
 
 
@@ -71,6 +72,23 @@ class YouTubeConfig:
     # browser extension while logged into YouTube). Takes precedence over
     # cookies_from_browser when both are set.
     cookies_file: str | None = None
+
+
+@dataclass
+class InstagramConfig:
+    """Configuration for the Instagram reel scraper's video understanding call."""
+
+    # Netscape-format cookies.txt for reels that need a logged-in session
+    # (private accounts, age-gated content). Same idiom as youtube.cookies_file.
+    cookies_file: str | None = None
+    # Gemini model used for the video-understanding call (speech transcript +
+    # on-screen visuals). Must be a model that accepts video input via the
+    # Files API. Deliberately the same default as ai.gemini_model — already
+    # known to support video input via the Files API.
+    video_model: str = "gemini-2.0-flash"
+    # Video is ~300 tokens/second, so a stray 20-minute reel would otherwise
+    # silently become a ~400k-token call. Over this limit -> caption-only.
+    max_duration_seconds: int = 180
 
 
 @dataclass
@@ -108,6 +126,7 @@ class Config:
     ai: AIConfig
     output_folders: OutputFoldersConfig
     youtube: YouTubeConfig
+    instagram: InstagramConfig = field(default_factory=InstagramConfig)
     vault_writer: VaultWriterConfig = field(default_factory=VaultWriterConfig)
     channel_crawl: ChannelCrawlConfig = field(default_factory=ChannelCrawlConfig)
     routing_categories: list[RoutingCategory] = field(default_factory=list)
@@ -160,6 +179,7 @@ class Config:
             output_folders=OutputFoldersConfig(
                 youtube=data["output_folders"].get("youtube", "02 Sources/Videos"),
                 article=data["output_folders"].get("article", "02 Sources/Articles"),
+                instagram=data["output_folders"].get("instagram", "02 Sources/Reels"),
                 default=data["output_folders"].get("default", "Clippings"),
             ),
             youtube=YouTubeConfig(
@@ -169,6 +189,11 @@ class Config:
                 ),
                 cookies_from_browser=data["youtube"].get("cookies_from_browser") or None,
                 cookies_file=data["youtube"].get("cookies_file") or None,
+            ),
+            instagram=InstagramConfig(
+                cookies_file=data.get("instagram", {}).get("cookies_file") or None,
+                video_model=data.get("instagram", {}).get("video_model", "gemini-2.0-flash"),
+                max_duration_seconds=data.get("instagram", {}).get("max_duration_seconds", 180),
             ),
             vault_writer=VaultWriterConfig(
                 daily_notes_folder=data.get("vault_writer", {}).get("daily_notes_folder", "06 Daily Notes"),

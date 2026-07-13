@@ -46,6 +46,8 @@ class ObsidianNoteGenerator:
         """Get the output folder based on content type."""
         if content_type == "youtube":
             return self.output_folders.get("youtube", "02 Sources/Videos")
+        elif content_type == "instagram":
+            return self.output_folders.get("instagram", "02 Sources/Reels")
         elif content_type == "article":
             return self.output_folders.get("article", "02 Sources/Articles")
         return self.output_folders.get("default", "Clippings")

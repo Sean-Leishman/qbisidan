@@ -187,6 +187,7 @@ Obsidian Vault/
     <auto-title>.md          ← /note <text>  or  /note <url>
   02 Sources/
     Videos/                  ← YouTube bookmarks
+    Reels/                   ← Instagram reel/post bookmarks
     Articles/<Category>/     ← Article bookmarks (AI-routed)
   03 Tags/
     <Tag>.md                 ← auto-created for new tag terms
@@ -244,6 +245,7 @@ Telegram message
 
 - **Summarizer** (`src/summarizer.py`) — structured summary + metadata (category, plain-text tag terms, action items, key concepts). YouTube summaries cover the full video with timestamped segments.
 - **QuestionAgent** (`src/agents/question_agent.py`) — Socratic review questions for YouTube videos.
+- **InstagramScraper** (`src/scrapers/instagram.py`) — downloads a reel with yt-dlp and sends it straight to Gemini's Files API for one call that both transcribes speech and describes on-screen visuals. Always uses `ai.gemini_api_key` regardless of the configured summarizer provider (video input is Gemini-only); missing key, over-duration video, or a failed download/Gemini call all degrade to a caption-only note rather than failing the bookmark.
 
 Both use the provider from `config.yaml → ai:` (currently Gemini Flash).
 
@@ -274,6 +276,11 @@ ai:
 vault_writer:
   daily_notes_folder: "06 Daily Notes"
   ics_folder: ""              # path your calendar app watches for ICS files
+
+instagram:
+  cookies_file: ""            # Netscape cookies.txt, for private/age-gated reels
+  video_model: "gemini-2.0-flash"   # must accept video input; always uses the Gemini key
+  max_duration_seconds: 180   # longer reels degrade to caption-only, not a huge Gemini bill
 
 routing_categories:           # AI routes articles to category subfolders
   - name: "Programming"

@@ -12,7 +12,7 @@ from .config import Config
 from .crawl_state import CrawlRunState, CrawlStateStore
 from .linker import NoteLinkEngine
 from .obsidian import ObsidianNoteGenerator
-from .scrapers import ChannelEnumerator, WebpageScraper, YouTubeScraper
+from .scrapers import ChannelEnumerator, InstagramScraper, WebpageScraper, YouTubeScraper
 from .scrapers.channel import StaleCookiesError
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
@@ -54,6 +54,15 @@ class Processor:
                 cookies_from_browser=config.youtube.cookies_from_browser,
                 cookies_file=config.youtube.cookies_file,
             ),
+            InstagramScraper(
+                gemini_api_key=config.ai.gemini_api_key,
+                video_model=config.instagram.video_model,
+                cookies_file=config.instagram.cookies_file,
+                max_duration_seconds=config.instagram.max_duration_seconds,
+            ),
+            # WebpageScraper.can_handle() is a catch-all for any http(s) URL —
+            # it MUST stay last, or it would "handle" youtube/instagram URLs
+            # itself and produce garbage.
             WebpageScraper(),
         ]
         self.summarizer = Summarizer(
@@ -90,6 +99,7 @@ class Processor:
             output_folders={
                 "youtube": config.output_folders.youtube,
                 "article": config.output_folders.article,
+                "instagram": config.output_folders.instagram,
                 "default": config.output_folders.default,
             },
         )
@@ -107,7 +117,14 @@ class Processor:
         return None
 
     def _get_folder_for_content(self, scraped, summary) -> str | None:
-        if scraped.content_type == "youtube":
+        # youtube and instagram both have a fixed content-type folder
+        # (output_folders.youtube / .instagram) rather than an AI-routed
+        # category subfolder — returning None here means save_note falls back
+        # to ObsidianNoteGenerator._get_output_folder(content_type), which is
+        # exactly that fixed folder. Reels get the same treatment as videos:
+        # "what kind of source is this" beats "what category does the AI think
+        # this is" for a reel same as it does for a YouTube video.
+        if scraped.content_type in ("youtube", "instagram"):
             return None
         folder = self.config.get_folder_for_category(summary.category)
         if folder:

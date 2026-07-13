@@ -26,6 +26,7 @@ ai:
 output_folders:
   youtube: "02 Sources/Videos"
   article: "02 Sources/Articles"
+  instagram: "02 Sources/Reels"
   default: "Clippings"
 
 # AI chooses one of these categories to route notes
@@ -57,6 +58,20 @@ youtube:
   # Path to a Netscape-format cookies.txt (export via a "Get cookies.txt" extension
   # while logged into YouTube). Takes precedence over cookies_from_browser.
   cookies_file: "/home/seanleishman/.cache/obsidian_helper/youtube_cookies.txt"
+
+instagram:
+  # Path to a Netscape-format cookies.txt for reels that need a logged-in
+  # session (private accounts, age-gated content). Same idiom as
+  # youtube.cookies_file. Leave blank to skip.
+  cookies_file: ""
+  # Gemini model for the video-understanding call (speech transcript + visual
+  # description). Must accept video input via the Files API. Video understanding
+  # ALWAYS uses this Gemini key/model even if ai.provider is groq/anthropic —
+  # Anthropic can't take raw video and Groq is audio-only.
+  video_model: "gemini-2.0-flash"
+  # Video is ~300 tokens/second (a 60s reel is ~18k tokens). A reel longer than
+  # this skips the Gemini call and produces a caption-only note instead.
+  max_duration_seconds: 180
 
 channel_crawl:
   max_videos: 25                  # cap on videos processed per /crawl

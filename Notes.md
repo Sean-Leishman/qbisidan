@@ -66,3 +66,62 @@ Gemini**. Never transcribe before filtering.
 **Remaining:** Phase 4 (backfill + interest filter; Instagram "Download your
 information" JSON export as the enumerator — no login, no ban risk) and Phase 5
 (books/magazines as entity notes with backlinks). Phase 5 is fully independent.
+
+### 2026-07-13 — Phase 4: generic crawl engine, Instagram export backfill, interest filter
+
+`Processor.run_channel_crawl`'s body is now `Processor.run_crawl(stubs, state_key,
+display_name, topic=None, chat_id=None, progress_callback=None, resume=True,
+date_from=None, date_to=None, max_items=None)` — a generic engine that takes a
+pre-built stub list and knows nothing about where they came from.
+`run_channel_crawl` kept its exact old signature and became a ~20-line wrapper
+(enumerate via `ChannelEnumerator` → call `run_crawl`) so `main.py --crawl` and
+Telegram's `/crawl` didn't need to change at all. `Processor.run_backfill(source,
+...)` is the second caller — `source` is `"instagram:saved"`, `"instagram:likes"`,
+or any playlist URL (YouTube Liked = `?list=LL` already worked via Phase 1).
+One engine, one `CrawlStateStore`, one dedupe path, one manifest, as planned —
+no parallel copy of the loop.
+
+**The ordering fix, precisely.** The engine now asks each scraper "do you have
+a `get_metadata()`?" (a plain `hasattr` check — `InstagramScraper` has one,
+`YouTubeScraper` doesn't). If yes and a topic is set: fetch metadata, run the
+interest filter on *that*, and only call the real `scrape()` (download + Gemini)
+for survivors — a rejection never reaches the expensive path. If no cheap path
+exists (YouTube), behaviour is byte-for-byte what it was before this phase:
+scrape first, filter the transcript excerpt after. Same `hasattr` check also
+gates the bulk title-pre-filter stage, which only makes sense when stub titles
+carry real signal — Instagram's export gives no caption at enumeration time, so
+that stage is skipped for it and the per-item cheap-metadata filter does the
+equivalent job. The regression test that matters here (`test_run_crawl.py`)
+asserts `scraper.scrape_calls == []` when the cheap filter rejects an item —
+that's the assertion protecting a potential 18M-token blind-transcription bill.
+
+**Interests config is not a new agent.** `InterestsConfig.render()` turns
+`include`/`exclude` lists into the same free-text topic string
+`TopicFilterAgent` already accepted; `run_backfill` defaults `topic` to it when
+the caller doesn't pass one explicitly.
+
+**Instagram export reader tolerates version drift by shape, not by key name.**
+Rather than hard-code `saved_saved_media` / `likes_media_likes` (both have
+already changed across Instagram's export versions), `instagram_export.py`
+walks the whole JSON tree for any dict carrying `string_map_data` (saved) or
+`string_list_data` (likes) — that inner shape has stayed stable. Each record is
+parsed in its own `try/except`; one malformed entry is skipped, not fatal.
+
+**Rate limiting / no silent truncation.** Backfill reuses
+`channel_crawl.sleep_seconds` (one pace setting, not a forked one) and adds
+`backfill.max_items` (default 50) as its own cap, since a backfill and a
+channel crawl have very different natural batch sizes. When the cap trims the
+stub list, the engine now logs a warning *and* appends a line to the final
+summary message ("Capped at N items — M more remain; resume to continue") —
+this now applies to `/crawl` too, previously silent there, which is a
+by-product improvement rather than scope creep since it's the same code path.
+
+**One behavioural nuance worth flagging:** the crawl index note's filename and
+the manifest/summary display name are now uniformly `channel_enumerator.last_title
+or <url-parsed slug>` (previously the index filename used the raw URL slug and
+only the manifest used the nicer title). Nothing in the test suite pinned the
+old filename, and it's a straightforwardly nicer name, but flagging it since
+the plan didn't call this distinction out explicitly.
+
+Phase 5 (books/magazines as entity notes) is the only thing left from
+`PLAN-ingest.md` and remains fully independent of everything above.

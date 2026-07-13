@@ -89,6 +89,39 @@ class InstagramConfig:
     # Video is ~300 tokens/second, so a stray 20-minute reel would otherwise
     # silently become a ~400k-token call. Over this limit -> caption-only.
     max_duration_seconds: int = 180
+    # Folder holding Instagram's "Download your information" (DYI) export —
+    # searched recursively for saved_posts.json / liked_posts.json. No login,
+    # no scraping; re-export manually for each future backfill chunk.
+    export_dir: str = ""
+
+
+@dataclass
+class InterestsConfig:
+    """Renders to the free-text topic string the existing TopicFilterAgent
+    already accepts — not a new agent, just a nicer config shape for it."""
+
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+
+    def render(self) -> str | None:
+        if not self.include and not self.exclude:
+            return None
+        parts = []
+        if self.include:
+            parts.append("Include content about: " + ", ".join(self.include) + ".")
+        if self.exclude:
+            parts.append("Exclude content about: " + ", ".join(self.exclude) + ".")
+        return " ".join(parts)
+
+
+@dataclass
+class BackfillConfig:
+    """Configuration for /backfill (and --backfill)."""
+
+    # ponytail: small default cap per run — Instagram rate-limits hard, so a
+    # backfill of thousands of likes is meant to run in chunks across several
+    # invocations (resumable via CrawlStateStore), not one heroic pass.
+    max_items: int = 50
 
 
 @dataclass
@@ -129,6 +162,8 @@ class Config:
     instagram: InstagramConfig = field(default_factory=InstagramConfig)
     vault_writer: VaultWriterConfig = field(default_factory=VaultWriterConfig)
     channel_crawl: ChannelCrawlConfig = field(default_factory=ChannelCrawlConfig)
+    interests: InterestsConfig = field(default_factory=InterestsConfig)
+    backfill: BackfillConfig = field(default_factory=BackfillConfig)
     routing_categories: list[RoutingCategory] = field(default_factory=list)
 
     def get_routing_category_names(self) -> list[str]:
@@ -194,6 +229,7 @@ class Config:
                 cookies_file=data.get("instagram", {}).get("cookies_file") or None,
                 video_model=data.get("instagram", {}).get("video_model", "gemini-2.0-flash"),
                 max_duration_seconds=data.get("instagram", {}).get("max_duration_seconds", 180),
+                export_dir=data.get("instagram", {}).get("export_dir", ""),
             ),
             vault_writer=VaultWriterConfig(
                 daily_notes_folder=data.get("vault_writer", {}).get("daily_notes_folder", "06 Daily Notes"),
@@ -206,6 +242,13 @@ class Config:
                 transcript_filter_chars=data.get("channel_crawl", {}).get("transcript_filter_chars", 1500),
                 state_file=data.get("channel_crawl", {}).get("state_file", "data/crawl_state.json"),
                 manifest_timeout_seconds=data.get("channel_crawl", {}).get("manifest_timeout_seconds", 120.0),
+            ),
+            interests=InterestsConfig(
+                include=data.get("interests", {}).get("include", []),
+                exclude=data.get("interests", {}).get("exclude", []),
+            ),
+            backfill=BackfillConfig(
+                max_items=data.get("backfill", {}).get("max_items", 50),
             ),
             routing_categories=[
                 RoutingCategory(name=cat["name"], folder=cat["folder"])

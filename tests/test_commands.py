@@ -247,6 +247,46 @@ class TestCrawlCommand:
         assert cmd.url is None
 
 
+class TestBackfillCommand:
+    def test_instagram_saved(self):
+        cmd = parse_message("/backfill instagram saved")
+        assert cmd.command_type == "backfill"
+        assert cmd.backfill_kind == "saved"
+        assert cmd.url is None
+
+    def test_instagram_likes(self):
+        cmd = parse_message("/backfill instagram likes")
+        assert cmd.command_type == "backfill"
+        assert cmd.backfill_kind == "likes"
+
+    def test_instagram_saved_is_case_insensitive(self):
+        cmd = parse_message("/backfill Instagram Saved")
+        assert cmd.backfill_kind == "saved"
+
+    def test_instagram_with_date_range(self):
+        cmd = parse_message("/backfill instagram likes from:2026-01-01 to:2026-05-01")
+        assert cmd.backfill_kind == "likes"
+        assert cmd.crawl_from == date(2026, 1, 1)
+        assert cmd.crawl_to == date(2026, 5, 1)
+
+    def test_playlist_url(self):
+        cmd = parse_message("/backfill https://youtube.com/playlist?list=LL")
+        assert cmd.command_type == "backfill"
+        assert cmd.backfill_kind is None
+        assert cmd.url == "https://youtube.com/playlist?list=LL"
+
+    def test_playlist_url_with_topic(self):
+        cmd = parse_message('/backfill https://youtube.com/playlist?list=LL topic:"cooking"')
+        assert cmd.url == "https://youtube.com/playlist?list=LL"
+        assert cmd.crawl_topic == "cooking"
+
+    def test_bare_backfill_has_no_kind_or_url(self):
+        cmd = parse_message("/backfill")
+        assert cmd.command_type == "backfill"
+        assert cmd.backfill_kind is None
+        assert cmd.url is None
+
+
 class TestInboxFallback:
     def test_plain_text_goes_to_inbox(self):
         cmd = parse_message("Just a random thought")

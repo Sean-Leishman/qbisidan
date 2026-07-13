@@ -14,6 +14,7 @@ from .linker import NoteLinkEngine
 from .obsidian import ObsidianNoteGenerator
 from .scrapers import ChannelEnumerator, InstagramScraper, WebpageScraper, YouTubeScraper
 from .scrapers.channel import StaleCookiesError
+from .scrapers.instagram_export import ExportNotFoundError, load_instagram_export
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
 from .telegram_queue import TelegramMessage, TelegramQueue
@@ -160,6 +161,12 @@ class Processor:
         "`/crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]`\n"
         "_Shows a manifest to pick a default model and override a few videos —_\n"
         "_tap Start to run, Cancel to abort, or leave it — it proceeds on the default model after a timeout._\n\n"
+        "*Backfill*\n"
+        "`/backfill instagram saved [from:YYYY-MM-DD] [to:YYYY-MM-DD]`\n"
+        "`/backfill instagram likes [from:YYYY-MM-DD] [to:YYYY-MM-DD]`\n"
+        "`/backfill <playlist_url>` — e.g. YouTube Liked = `?list=LL`\n"
+        "_Filters down to your configured `interests` by default; runs in chunks_\n"
+        "_(`backfill.max_items` per run) since Instagram rate-limits hard — just re-run to continue._\n\n"
         "*Date syntax:* `@today` `@tomorrow` `@friday` `@2026-05-01`\n\n"
         "`/search <query>` — search vault notes\n"
         "`/status` — today's capture summary\n"
@@ -532,74 +539,82 @@ class Processor:
             return config_default, {}
         return default_provider, choices
 
-    def run_channel_crawl(
+    def run_crawl(
         self,
-        url: str,
-        date_from=None,
-        date_to=None,
+        stubs: list,
+        state_key: str,
+        display_name: str,
         topic: str | None = None,
+        chat_id: int | None = None,
         progress_callback=None,
         resume: bool = True,
-        chat_id: int | None = None,
+        date_from=None,
+        date_to=None,
+        max_items: int | None = None,
     ) -> ProcessingResult:
-        """Run a channel crawl end-to-end. Used by both Telegram and CLI entry points.
+        """Generic crawl engine: topic-filter -> dedupe vs vault -> scrape ->
+        summarise -> write note -> resumable state -> index note.
 
-        progress_callback(done, total, current_title) is called before each video. If None,
-        no progress is reported.
+        Shared by every batch-ingest entry point (`/crawl` channels and
+        playlists, `/backfill` Instagram exports and YouTube Liked/Watch
+        Later) — the caller's only job is to hand it a pre-built list of
+        stubs (VideoStub: video_id/url/title/upload_date) plus a stable
+        `state_key` for resume and a human-readable `display_name` for the
+        manifest/index/summary text. This method has no idea where the stubs
+        came from.
 
-        chat_id, when set, shows the Telegram model-choice manifest before crawling
-        and blocks for it — only the Telegram entry point passes this. The CLI path
-        leaves it None and always runs on the configured default model.
+        date_from/date_to are only used for the index note's metadata line —
+        stubs are assumed to already be date-filtered by whoever built them.
+
+        progress_callback(done, total, current_title) is called before each
+        item. If None, no progress is reported.
+
+        chat_id, when set, shows the Telegram model-choice manifest before
+        running and blocks for it — only the Telegram entry points pass this.
+        The CLI paths leave it None and always run on the configured default
+        model.
         """
-        if not url:
-            return ProcessingResult(
-                url=None, success=False,
-                error="Usage: /crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]",
-            )
-
         cfg = self.config.channel_crawl
-        channel = self._channel_name_from_url(url)
-        state_key = CrawlStateStore.make_key(
-            channel,
-            date_from.isoformat() if date_from else "all",
-            date_to.isoformat() if date_to else "all",
-            topic,
-        )
+        if not stubs:
+            return ProcessingResult(url=None, success=False, error=f"No items found for {display_name}")
+
         state = self.crawl_state.load(state_key) if resume else CrawlRunState()
         processed = set(state.processed_ids)
         filtered_out = set(state.filtered_out_ids)
 
-        try:
-            stubs = self.channel_enumerator.list_videos(url, date_from=date_from, date_to=date_to)
-        except StaleCookiesError as e:
-            return ProcessingResult(url=url, success=False, error=str(e))
-        if not stubs:
-            return ProcessingResult(
-                url=url, success=False,
-                error=f"No regular videos found on {url} in given range",
-            )
-
-        # Stage 1: title filter (only when many videos AND topic given).
-        if topic and len(stubs) > cfg.title_filter_threshold:
+        # Stage 1: bulk title filter — only meaningful when stubs carry real
+        # titles (YouTube titles). Enumerators whose scraper offers a cheap
+        # per-item metadata path (Instagram) skip this: their stub titles are
+        # placeholders (no caption at enumeration time — see instagram_export),
+        # so there's nothing here for the LLM to vote on. The per-item
+        # cheap-metadata filter below is the equivalent stage for those.
+        scraper_for_stubs = self._get_scraper(stubs[0].url)
+        has_cheap_metadata = bool(scraper_for_stubs and hasattr(scraper_for_stubs, "get_metadata"))
+        if topic and not has_cheap_metadata and len(stubs) > cfg.title_filter_threshold:
             titles = [s.title for s in stubs]
             keep_ids = self.topic_filter.filter_titles(titles, topic)
             stubs = [stubs[i] for i in keep_ids]
-            logger.info(f"Title filter retained {len(stubs)} of {len(titles)} videos")
+            logger.info(f"Title filter retained {len(stubs)} of {len(titles)} items")
 
-        if len(stubs) > cfg.max_videos:
-            logger.info(f"Capping crawl at {cfg.max_videos} (had {len(stubs)})")
-            stubs = stubs[: cfg.max_videos]
+        cap = max_items if max_items is not None else cfg.max_videos
+        capped_count = 0
+        if len(stubs) > cap:
+            capped_count = len(stubs) - cap
+            # No silent truncation: logged here AND surfaced in the final
+            # summary message below, so a capped backfill visibly says so
+            # rather than quietly looking "done".
+            logger.warning(f"Capping crawl at {cap} of {len(stubs)} items — {capped_count} not attempted this run")
+            stubs = stubs[:cap]
 
         default_provider = None
         overrides: dict[str, str] = {}
         if chat_id is not None:
-            display_name = self.channel_enumerator.last_title or channel
             manifest = self._run_model_manifest(chat_id, display_name, stubs, cfg.manifest_timeout_seconds)
             if manifest is None:
-                logger.info(f"Crawl cancelled via manifest for {channel}")
+                logger.info(f"Crawl cancelled via manifest for {display_name}")
                 return ProcessingResult(
-                    url=url, success=True,
-                    message=f"Crawl cancelled for {channel}. Nothing written.",
+                    url=None, success=True,
+                    message=f"Crawl cancelled for {display_name}. Nothing written.",
                 )
             default_provider, overrides = manifest
 
@@ -630,13 +645,43 @@ class Processor:
                 continue
             chosen_provider = default_provider if choice == "default" else choice
 
-            # Stage 2: transcript-level topic filter. Scrape once, then decide.
             scraper = self._get_scraper(stub.url)
             if not scraper:
                 state.errors.append(f"{stub.title}: no scraper")
                 state.processed_ids.append(stub.video_id)
                 self.crawl_state.save(state_key, state)
                 continue
+
+            # Stage 2, cheap path: when the scraper offers get_metadata (a
+            # metadata-only fetch — no download, no Gemini call), filter on
+            # THAT before ever calling scraper.scrape(). This is the ordering
+            # that matters for Instagram: scrape() there means download +
+            # Gemini video understanding, so an item the interest filter would
+            # reject must never reach it. YouTube's scraper has no
+            # get_metadata, so it falls through to the stage-2b post-scrape
+            # filter unchanged.
+            used_cheap_filter = False
+            if topic and hasattr(scraper, "get_metadata"):
+                try:
+                    metadata = scraper.get_metadata(stub.url)
+                except Exception as e:
+                    logger.warning(
+                        f"Cheap metadata fetch failed for {stub.url}, falling back to post-scrape filter: {e}"
+                    )
+                    metadata = None
+                if metadata is not None:
+                    used_cheap_filter = True
+                    cheap_title = metadata.get("title") or stub.title
+                    excerpt = (metadata.get("caption") or metadata.get("description") or "")[
+                        : cfg.transcript_filter_chars
+                    ]
+                    if not self.topic_filter.is_relevant(cheap_title, excerpt, topic):
+                        logger.info(f"Cheap-metadata filter dropped: {cheap_title}")
+                        state.filtered_out_ids.append(stub.video_id)
+                        self.crawl_state.save(state_key, state)
+                        if cfg.sleep_seconds:
+                            time.sleep(cfg.sleep_seconds)
+                        continue
 
             try:
                 scraped = scraper.scrape(stub.url)
@@ -651,7 +696,9 @@ class Processor:
                     time.sleep(cfg.sleep_seconds)
                 continue
 
-            if topic:
+            # Stage 2b: post-scrape transcript-level filter — only for
+            # scrapers that had no cheap path (already filtered above if so).
+            if topic and not used_cheap_filter:
                 excerpt_parts = [scraped.description or "", scraped.content or ""]
                 excerpt = "\n".join(p for p in excerpt_parts if p)[: cfg.transcript_filter_chars]
                 if not self.topic_filter.is_relevant(scraped.title, excerpt, topic):
@@ -667,7 +714,7 @@ class Processor:
                 state.created_titles.append(result.title)
             elif not result.success:
                 state.errors.append(f"{stub.title}: {result.error}")
-                logger.warning(f"Crawl video failed ({stub.url}): {result.error}")
+                logger.warning(f"Crawl item failed ({stub.url}): {result.error}")
             state.processed_ids.append(stub.video_id)
             self.crawl_state.save(state_key, state)
 
@@ -681,7 +728,7 @@ class Processor:
                 logger.exception("Progress callback raised at completion")
 
         index_path = self.vault_writer.write_channel_index(
-            channel_name=channel,
+            channel_name=display_name,
             date_from=date_from,
             date_to=date_to,
             topic=topic,
@@ -689,14 +736,72 @@ class Processor:
             skipped=state.skipped_titles,
         )
         summary = (
-            f"Crawl done for {channel}: {len(state.created_titles)} new, "
+            f"Crawl done for {display_name}: {len(state.created_titles)} new, "
             f"{len(state.skipped_titles)} skipped, "
             f"{len(state.filtered_out_ids)} filtered out, "
             f"{len(state.errors)} failed.\nIndex: `{index_path.name}`"
         )
+        if capped_count:
+            summary += f"\nCapped at {cap} items this run — {capped_count} more remain; resume to continue."
         # Clear state once the run completed end-to-end.
         self.crawl_state.clear(state_key)
-        return ProcessingResult(url=url, success=True, message=summary)
+        return ProcessingResult(url=None, success=True, message=summary)
+
+    def run_channel_crawl(
+        self,
+        url: str,
+        date_from=None,
+        date_to=None,
+        topic: str | None = None,
+        progress_callback=None,
+        resume: bool = True,
+        chat_id: int | None = None,
+    ) -> ProcessingResult:
+        """/crawl <channel_url> ... — thin wrapper over run_crawl. Enumerates a
+        YouTube channel or playlist via ChannelEnumerator and hands the stubs
+        to the generic engine. Kept as its own method, with this exact
+        signature, because both main.py's --crawl CLI flag and Telegram's
+        /crawl command call it directly.
+        """
+        if not url:
+            return ProcessingResult(
+                url=None, success=False,
+                error="Usage: /crawl <channel_url> [from:YYYY-MM-DD] [to:YYYY-MM-DD] [topic:\"...\"]",
+            )
+
+        channel = self._channel_name_from_url(url)
+        state_key = CrawlStateStore.make_key(
+            channel,
+            date_from.isoformat() if date_from else "all",
+            date_to.isoformat() if date_to else "all",
+            topic,
+        )
+
+        try:
+            stubs = self.channel_enumerator.list_videos(url, date_from=date_from, date_to=date_to)
+        except StaleCookiesError as e:
+            return ProcessingResult(url=url, success=False, error=str(e))
+        if not stubs:
+            return ProcessingResult(
+                url=url, success=False,
+                error=f"No regular videos found on {url} in given range",
+            )
+
+        display_name = self.channel_enumerator.last_title or channel
+        result = self.run_crawl(
+            stubs=stubs,
+            state_key=state_key,
+            display_name=display_name,
+            topic=topic,
+            chat_id=chat_id,
+            progress_callback=progress_callback,
+            resume=resume,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if result.url is None:
+            result.url = url
+        return result
 
     def _process_channel_crawl(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
         """/crawl <url> ... → batch-bookmark a channel (Telegram entry point)."""
@@ -716,6 +821,123 @@ class Processor:
 
         return self.run_channel_crawl(
             url=cmd.url,
+            date_from=cmd.crawl_from,
+            date_to=cmd.crawl_to,
+            topic=cmd.crawl_topic,
+            progress_callback=callback if notify else None,
+            chat_id=message.chat_id if notify else None,
+        )
+
+    # ── Backfill ────────────────────────────────────────────────────────────────
+
+    def run_backfill(
+        self,
+        source: str,
+        date_from=None,
+        date_to=None,
+        topic: str | None = None,
+        progress_callback=None,
+        resume: bool = True,
+        chat_id: int | None = None,
+        max_items: int | None = None,
+    ) -> ProcessingResult:
+        """Backfill a large saved/liked history through the same run_crawl
+        engine /crawl uses.
+
+        `source` is either "instagram:saved", "instagram:likes", or any URL
+        ChannelEnumerator can enumerate (a playlist works exactly like /crawl's
+        channel URLs — YouTube Liked is `?list=LL`, Watch Later is `?list=WL`).
+
+        `topic` defaults to the rendered `interests` config when not given, so
+        a plain backfill with no explicit topic still filters down to what the
+        user actually cares about.
+        """
+        topic = topic or self.config.interests.render()
+
+        if source.startswith("instagram:"):
+            kind = source.split(":", 1)[1]
+            if kind not in ("saved", "likes"):
+                return ProcessingResult(
+                    url=None, success=False,
+                    error=f"Unknown Instagram backfill kind {kind!r}; use 'saved' or 'likes'",
+                )
+            export_dir = self.config.instagram.export_dir
+            if not export_dir:
+                return ProcessingResult(
+                    url=None, success=False,
+                    error="instagram.export_dir not configured in config.yaml",
+                )
+            try:
+                stubs = load_instagram_export(export_dir, kind, date_from, date_to)
+            except ExportNotFoundError as e:
+                return ProcessingResult(url=None, success=False, error=str(e))
+            display_name = f"Instagram {kind}"
+            state_key = CrawlStateStore.make_key(
+                f"instagram-{kind}",
+                date_from.isoformat() if date_from else "all",
+                date_to.isoformat() if date_to else "all",
+                topic,
+            )
+        else:
+            try:
+                stubs = self.channel_enumerator.list_videos(source, date_from=date_from, date_to=date_to)
+            except StaleCookiesError as e:
+                return ProcessingResult(url=source, success=False, error=str(e))
+            display_name = self.channel_enumerator.last_title or self._channel_name_from_url(source)
+            state_key = CrawlStateStore.make_key(
+                self._channel_name_from_url(source),
+                date_from.isoformat() if date_from else "all",
+                date_to.isoformat() if date_to else "all",
+                topic,
+            )
+
+        if not stubs:
+            return ProcessingResult(url=None, success=False, error=f"No items found for {display_name}")
+
+        result = self.run_crawl(
+            stubs=stubs,
+            state_key=state_key,
+            display_name=display_name,
+            topic=topic,
+            chat_id=chat_id,
+            progress_callback=progress_callback,
+            resume=resume,
+            date_from=date_from,
+            date_to=date_to,
+            max_items=max_items if max_items is not None else self.config.backfill.max_items,
+        )
+        if result.url is None:
+            result.url = source
+        return result
+
+    def _process_backfill(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        """/backfill instagram [saved|likes] [from:...] [to:...] [topic:"..."]
+        /backfill <playlist-url> [from:...] [to:...] [topic:"..."]
+        (Telegram entry point)."""
+        source = f"instagram:{cmd.backfill_kind}" if cmd.backfill_kind else cmd.url
+        if not source:
+            return ProcessingResult(
+                url=None, success=False,
+                error='Usage: /backfill instagram [saved|likes] [from:YYYY-MM-DD] [to:YYYY-MM-DD]  '
+                      "or  /backfill <playlist-url>",
+            )
+
+        label = f"Instagram {cmd.backfill_kind}" if cmd.backfill_kind else self._channel_name_from_url(cmd.url)
+        notify = self.config.telegram.send_notifications
+        progress_id: int | None = None
+
+        def callback(done: int, total: int, current: str | None) -> None:
+            nonlocal progress_id
+            if not notify:
+                return
+            text = self._render_progress_bar(label, done, total, current)
+            if progress_id is None:
+                progress_id = self.telegram.send_message_get_id(message.chat_id, text)
+            else:
+                self.telegram.edit_message(message.chat_id, progress_id, text)
+
+        return self.run_backfill(
+            source=source,
             date_from=cmd.crawl_from,
             date_to=cmd.crawl_to,
             topic=cmd.crawl_topic,
@@ -768,6 +990,7 @@ class Processor:
         "project_note": "_process_project_note",
         "event": "_process_event",
         "channel_crawl": "_process_channel_crawl",
+        "backfill": "_process_backfill",
         "question": "_process_question",
         "inbox": "_process_inbox",
     }

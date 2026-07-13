@@ -22,6 +22,7 @@ class ParsedCommand:
     crawl_from: date | None = None
     crawl_to: date | None = None
     crawl_topic: str | None = None
+    backfill_kind: str | None = None  # "saved" | "likes" for /backfill instagram ...
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"{}|\\^`\[\]]+")
@@ -177,6 +178,7 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         project_note    — /project X         → 07 Projects/X/Notes.md
         event           — /event             → ICS + daily note
         channel_crawl   — /crawl <url> ...   → batch-bookmark a channel's videos
+        backfill        — /backfill ...      → batch-ingest a saved history, filtered by interests
         inbox           — plain text default → 08 Trackers/Inbox.md
     """
     text = text.strip()
@@ -277,6 +279,22 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
             command_type="channel_crawl",
             text=body,
             url=url,
+            crawl_from=date_from,
+            crawl_to=date_to,
+            crawl_topic=topic,
+        )
+
+    # /backfill instagram [saved|likes] [from:...] [to:...] [topic:"..."]
+    # /backfill <playlist-url> [from:...] [to:...] [topic:"..."]
+    if text.lower().startswith("/backfill"):
+        body = text[9:].strip()
+        url, date_from, date_to, topic = _parse_crawl_args(body)
+        kind_match = re.match(r"instagram\s+(saved|likes)\b", body, re.IGNORECASE)
+        return ParsedCommand(
+            command_type="backfill",
+            text=body,
+            url=url,
+            backfill_kind=kind_match.group(1).lower() if kind_match else None,
             crawl_from=date_from,
             crawl_to=date_to,
             crawl_topic=topic,

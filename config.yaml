@@ -72,6 +72,20 @@ instagram:
   # Video is ~300 tokens/second (a 60s reel is ~18k tokens). A reel longer than
   # this skips the Gemini call and produces a caption-only note instead.
   max_duration_seconds: 180
+  # Folder holding Instagram's "Download your information" export, searched
+  # recursively for saved_posts.json / liked_posts.json. Leave blank to skip
+  # Instagram backfill. Re-export manually for each future backfill chunk.
+  export_dir: ""
+
+# What /backfill and unfiltered /crawl-without-topic runs should keep vs drop.
+# Rendered to a free-text topic string and passed straight to the existing
+# TopicFilterAgent — not a new agent.
+interests:
+  include: ["food & restaurants", "apartments & interiors", "life advice", "coding & software"]
+  exclude: ["personal / friends", "comedy & memes", "random funny clips"]
+
+backfill:
+  max_items: 50   # cap on items processed per /backfill run — Instagram rate-limits hard; chunk across invocations
 
 channel_crawl:
   max_videos: 25                  # cap on videos processed per /crawl

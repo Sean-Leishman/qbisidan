@@ -39,10 +39,12 @@ class VaultWriter:
         vault_path: Path,
         daily_notes_folder: str = "06 Daily Notes",
         ics_folder: str = "",
+        books_folder: str = "02 Sources/Books",
     ):
         self.vault_path = Path(vault_path)
         self.daily_notes_folder = daily_notes_folder
         self.ics_folder = Path(ics_folder) if ics_folder else None
+        self.books_folder = books_folder
 
     # ── Tracker helpers ────────────────────────────────────────────────────────
 
@@ -312,6 +314,55 @@ cssclasses:
         target.write_text(content, encoding="utf-8")
         logger.info(f"Appended question to: {target}")
         return True
+
+    # ── Source entities (books, magazines, papers, podcasts) ───────────────────
+
+    def ensure_source_note(
+        self,
+        title: str,
+        source_type: str,
+        author: str | None = None,
+        referenced_by: str | None = None,
+    ) -> Path:
+        """Create the entity note for a mentioned book/magazine/paper/podcast if
+        it doesn't already exist, and append a backlink to the referencing note
+        under '## Referenced by'. Idempotent: calling twice with the same
+        (title, referenced_by) does not duplicate the backlink line.
+
+        # ponytail: exact title match, one canonical file per title — no fuzzy
+        # matching ("Sapiens" vs "Sapiens: A Brief History..." make two notes
+        # until that earns itself; see PLAN-ingest.md Phase 5).
+        """
+        path = self.vault_path / self.books_folder / (_sanitize_filename(title) + ".md")
+
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lines = ["---", f'title: "{title}"', f"type: {source_type}"]
+            if author:
+                lines.append(f'author: "{author}"')
+            lines += [
+                f"created: {date.today().isoformat()}",
+                "tags:",
+                "  - source-entity",
+                "---",
+                "",
+                f"# {title}",
+                "",
+                "## Referenced by",
+                "",
+            ]
+            path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info(f"Created source note: {path}")
+
+        if referenced_by:
+            content = path.read_text(encoding="utf-8")
+            link_line = f"- [[{referenced_by}]]"
+            if link_line not in content.splitlines():
+                content = content.rstrip("\n") + f"\n{link_line}\n"
+                path.write_text(content, encoding="utf-8")
+                logger.info(f"Linked {referenced_by!r} -> {path}")
+
+        return path
 
     # ── Channel crawls ─────────────────────────────────────────────────────────
 

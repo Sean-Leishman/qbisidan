@@ -4,7 +4,46 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Config, RoutingCategory
+from src.config import Config, OutputFoldersConfig, RoutingCategory
+
+
+class TestOutputFoldersConfig:
+    def test_books_default(self):
+        assert OutputFoldersConfig().books == "02 Sources/Books"
+
+    def test_books_loaded_from_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.yaml"
+            config_file.write_text(
+                """
+vault_path: "/tmp/vault"
+
+telegram:
+  bot_token: "test"
+  allowed_chat_ids: []
+
+ai:
+  provider: "groq"
+  groq_api_key: "test"
+  groq_model: "test"
+  gemini_api_key: ""
+  gemini_model: ""
+  anthropic_api_key: ""
+  anthropic_model: ""
+
+output_folders:
+  youtube: "02 Sources/Videos"
+  article: "02 Sources/Articles"
+  books: "02 Sources/Books Custom"
+  default: "Clippings"
+
+youtube:
+  fetch_transcript: true
+  transcript_languages: ["en"]
+"""
+            )
+            config = Config.load(str(config_file))
+            assert config.output_folders.books == "02 Sources/Books Custom"
 
 
 class TestRoutingCategory:

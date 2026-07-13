@@ -24,6 +24,7 @@ class TestSummaryResult:
         assert r.review_questions == []
         assert r.key_concepts == []
         assert r.content_truncated is False
+        assert r.mentioned_sources == []
 
     def test_full_init(self):
         r = SummaryResult(
@@ -130,3 +131,35 @@ class TestParseStructuredResponse:
         assert r.category == "Science"
         assert "Biology" in r.tags
         assert "Great article summary" in r.summary
+
+
+# ── mentioned_sources ───────────────────────────────────────────────────────
+
+class TestMentionedSources:
+    def test_parses_mentioned_sources(self, summarizer):
+        response = (
+            'Summary text.\n```json\n'
+            '{"category": "Other", "tags": [], "action_items": [], '
+            '"review_questions": [], "key_concepts": [], '
+            '"mentioned_sources": [{"title": "Sapiens", "type": "book", "author": "Yuval Noah Harari"}]}'
+            "\n```"
+        )
+        r = summarizer._parse_structured_response(response)
+        assert r.mentioned_sources == [
+            {"title": "Sapiens", "type": "book", "author": "Yuval Noah Harari"}
+        ]
+
+    def test_missing_field_defaults_to_empty_list(self, summarizer):
+        """Older notes / models that ignore the field must not break parsing."""
+        response = (
+            'Summary text.\n```json\n'
+            '{"category": "Other", "tags": [], "action_items": [], '
+            '"review_questions": [], "key_concepts": []}'
+            "\n```"
+        )
+        r = summarizer._parse_structured_response(response)
+        assert r.mentioned_sources == []
+
+    def test_no_json_at_all_defaults_to_empty_list(self, summarizer):
+        r = summarizer._parse_structured_response("Plain summary, no metadata.")
+        assert r.mentioned_sources == []

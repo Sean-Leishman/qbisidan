@@ -27,6 +27,7 @@ output_folders:
   youtube: "02 Sources/Videos"
   article: "02 Sources/Articles"
   instagram: "02 Sources/Reels"
+  books: "02 Sources/Books"
   default: "Clippings"
 
 # AI chooses one of these categories to route notes

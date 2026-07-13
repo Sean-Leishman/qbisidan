@@ -165,6 +165,23 @@ class TestNoteSections:
 
 # ── File saving ────────────────────────────────────────────────────────────────
 
+class TestMentionedSources:
+    def test_renders_two_book_wikilinks(self, generator, scraped_article, full_summary):
+        sources = ["[[02 Sources/Books/Sapiens|Sapiens]]", "[[02 Sources/Books/Atomic Habits|Atomic Habits]]"]
+        note = generator.generate_note(scraped_article, full_summary, resolved_sources=sources)
+        assert "Mentioned sources:" in note
+        assert "[[02 Sources/Books/Sapiens|Sapiens]]" in note
+        assert "[[02 Sources/Books/Atomic Habits|Atomic Habits]]" in note
+
+    def test_empty_mentioned_sources_renders_nothing(self, generator, scraped_article, full_summary):
+        note = generator.generate_note(scraped_article, full_summary, resolved_sources=[])
+        assert "Mentioned sources" not in note
+
+    def test_none_mentioned_sources_renders_nothing(self, generator, scraped_article, full_summary):
+        note = generator.generate_note(scraped_article, full_summary, resolved_sources=None)
+        assert "Mentioned sources" not in note
+
+
 class TestSaveNote:
     def test_save_uses_folder_override(self, generator, scraped_article):
         summary = SummaryResult(summary="Test", category="Programming")

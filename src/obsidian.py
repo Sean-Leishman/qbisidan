@@ -76,6 +76,7 @@ class ObsidianNoteGenerator:
         user_notes: str | None = None,
         related_links: list[str] | None = None,
         resolved_tags: list[str] | None = None,
+        resolved_sources: list[str] | None = None,
     ) -> str:
         """Generate the markdown content for an Obsidian note."""
         now = datetime.now()
@@ -139,6 +140,11 @@ class ObsidianNoteGenerator:
             summary.summary,
         ]
 
+        # Mentioned sources — pre-resolved wikilinks, generator only renders
+        if resolved_sources:
+            content_parts.append("")
+            content_parts.append("Mentioned sources: " + ", ".join(resolved_sources))
+
         # Add Key Concepts section with related note links
         if related_links:
             content_parts.append("")
@@ -187,6 +193,7 @@ class ObsidianNoteGenerator:
         related_links: list[str] | None = None,
         folder_override: str | None = None,
         resolved_tags: list[str] | None = None,
+        resolved_sources: list[str] | None = None,
     ) -> tuple[Path, str]:
         """Save the note to the appropriate folder in the vault.
 
@@ -207,7 +214,9 @@ class ObsidianNoteGenerator:
             folder = self._get_output_folder(scraped.content_type)
 
         filename = self._generate_filename(scraped)
-        content = self.generate_note(scraped, summary, user_notes, related_links, resolved_tags)
+        content = self.generate_note(
+            scraped, summary, user_notes, related_links, resolved_tags, resolved_sources
+        )
 
         # Create full path
         full_folder = self.vault_path / folder

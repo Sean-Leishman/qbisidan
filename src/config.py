@@ -53,6 +53,7 @@ class OutputFoldersConfig:
     youtube: str = "02 Sources/Videos"
     article: str = "02 Sources/Articles"
     instagram: str = "02 Sources/Reels"
+    books: str = "02 Sources/Books"
     default: str = "Clippings"
 
 
@@ -215,6 +216,7 @@ class Config:
                 youtube=data["output_folders"].get("youtube", "02 Sources/Videos"),
                 article=data["output_folders"].get("article", "02 Sources/Articles"),
                 instagram=data["output_folders"].get("instagram", "02 Sources/Reels"),
+                books=data["output_folders"].get("books", "02 Sources/Books"),
                 default=data["output_folders"].get("default", "Clippings"),
             ),
             youtube=YouTubeConfig(

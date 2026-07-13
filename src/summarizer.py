@@ -18,6 +18,7 @@ class SummaryResult:
     review_questions: list[str] = field(default_factory=list)
     key_concepts: list[str] = field(default_factory=list)
     content_truncated: bool = False
+    mentioned_sources: list[dict] = field(default_factory=list)
 
 
 class Summarizer(BaseAgent):
@@ -138,7 +139,8 @@ After your summary, extract metadata as JSON at the very end enclosed in ```json
   "tags": [],
   "action_items": [],
   "review_questions": [],
-  "key_concepts": []
+  "key_concepts": [],
+  "mentioned_sources": []
 }}
 ```
 
@@ -160,7 +162,13 @@ review_questions:
 - Focus on understanding (why/how)
 
 key_concepts:
-- 3–5 important ideas or frameworks mentioned in the content"""
+- 3–5 important ideas or frameworks mentioned in the content
+
+mentioned_sources:
+- Books, magazines, papers, or podcasts that are explicitly NAMED in the content
+- Do NOT infer, guess, suggest related reading, or hallucinate an author — only what is actually named
+- Each item: {{"title": "...", "type": "book|magazine|paper|podcast", "author": "..."}} (omit author if not stated)
+- An empty list is the correct, common answer when nothing is named"""
 
     def __init__(
         self,
@@ -235,6 +243,7 @@ key_concepts:
             action_items=data.get("action_items", []),
             review_questions=data.get("review_questions", []),
             key_concepts=data.get("key_concepts", []),
+            mentioned_sources=data.get("mentioned_sources") or [],
         )
 
     def summarize(self, scraped: ScrapedContent, user_notes: str | None = None) -> SummaryResult:

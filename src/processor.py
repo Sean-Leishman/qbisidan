@@ -108,6 +108,7 @@ class Processor:
             vault_path=config.vault_path,
             daily_notes_folder=config.vault_writer.daily_notes_folder,
             ics_folder=config.vault_writer.ics_folder,
+            books_folder=config.output_folders.books,
         )
         self.search = VaultSearch(vault_path=config.vault_path)
 
@@ -237,6 +238,34 @@ class Processor:
             self._summarizers[provider] = cached
         return cached
 
+    def _ensure_mentioned_sources(self, mentioned: list[dict], referencing_title: str) -> list[str]:
+        """Create/update an entity note per book/magazine/paper/podcast the
+        summarizer found explicitly named in the content, and return
+        pre-resolved wikilinks for the referencing note's own "Mentioned
+        sources" line — mirrors the resolved_tags idiom (resolve here, the
+        generator only renders).
+
+        Note-ordering: uses `referencing_title` (== scraped.title, known
+        before the note is written) as the backlink target rather than the
+        note's eventual saved path, so the source note can be written before
+        the referencing note exists and no second write to the referencing
+        note is needed. This is the same "good enough" bare-title convention
+        write_channel_index already relies on elsewhere in this file.
+        """
+        resolved = []
+        for src in mentioned or []:
+            title = (src.get("title") or "").strip()
+            if not title:
+                continue
+            path = self.vault_writer.ensure_source_note(
+                title=title,
+                source_type=src.get("type") or "book",
+                author=src.get("author") or None,
+                referenced_by=referencing_title,
+            )
+            resolved.append(self.linker._make_wikilink(path, path.stem))
+        return resolved
+
     def _save_scraped(
         self, scraped, user_notes: str | None, provider: str | None = None
     ) -> ProcessingResult:
@@ -262,11 +291,13 @@ class Processor:
 
             resolved_tags = self.linker.resolve_tags(summary.tags)
             related_links = self.linker.find_related_notes(summary.key_concepts, summary.tags)
+            resolved_sources = self._ensure_mentioned_sources(summary.mentioned_sources, scraped.title)
             folder_override = self._get_folder_for_content(scraped, summary)
 
             file_path, folder = self.note_generator.save_note(
                 scraped, summary, user_notes, related_links, folder_override,
                 resolved_tags=resolved_tags,
+                resolved_sources=resolved_sources,
             )
             logger.info(f"Created: {file_path}")
             self.telegram.log_activity("note")

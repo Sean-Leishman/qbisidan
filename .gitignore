@@ -28,3 +28,11 @@ data/telegram_state.json
 # Claude Code local settings + temp files
 .claude/settings.local.json
 .claude/*.tmp.*
+
+# memory files are symlinks into the vault (canonical there)
+Notes.md
+LOG.md
+PLAN.md
+DECISIONS.md
+Todo.md
+.vault

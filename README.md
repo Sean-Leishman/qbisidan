@@ -295,5 +295,5 @@ routing_categories:           # AI routes articles to category subfolders
 
 ```bash
 # Run every 5 minutes
-*/5 * * * * cd /home/seanleishman/personal/obsidian_helper && .venv/bin/python main.py >> obsidian_helper.log 2>&1
+*/5 * * * * cd /home/seanleishman/Projects/obsidian_helper && . ./.env && .venv/bin/python main.py >> obsidian_helper.log 2>&1
 ```

@@ -10,8 +10,8 @@ version plus the things that bit me that the README doesn't surface.
 - A Telegram bot (created via `@BotFather`) and your own chat ID.
 - An API key for at least one of: Gemini (default), Groq, Anthropic.
 - A local Obsidian vault path. Currently `config.yaml` points to a
-  Windows OneDrive path mounted under WSL:
-  `/mnt/c/Users/leish/OneDrive/Documents/Obsidian Vault`.
+  Linux vault path (WSL OneDrive mount until 2026-09-28):
+  `/home/seanleishman/Projects/Nordorn`.
 
 ## Environment
 
@@ -46,7 +46,7 @@ export GEMINI_API_KEY="…"        # default provider
 ## Install and run
 
 ```bash
-cd /home/seanleishman/personal/obsidian_helper
+cd /home/seanleishman/Projects/obsidian_helper
 uv sync
 python main.py                   # one-shot (cron mode)
 python main.py --watch           # poll every 60s

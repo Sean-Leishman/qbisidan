@@ -1,4 +1,4 @@
-vault_path: "/mnt/c/Users/leish/OneDrive/Documents/Obsidian Vault"
+vault_path: "/home/seanleishman/Projects/Nordorn"
 
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"

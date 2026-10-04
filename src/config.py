@@ -86,7 +86,7 @@ class InstagramConfig:
     # on-screen visuals). Must be a model that accepts video input via the
     # Files API. Deliberately the same default as ai.gemini_model — already
     # known to support video input via the Files API.
-    video_model: str = "gemini-2.0-flash"
+    video_model: str = "gemini-flash-latest"
     # Video is ~300 tokens/second, so a stray 20-minute reel would otherwise
     # silently become a ~400k-token call. Over this limit -> caption-only.
     max_duration_seconds: int = 180
@@ -207,9 +207,9 @@ class Config:
                 groq_api_key=data["ai"].get("groq_api_key", ""),
                 groq_model=data["ai"].get("groq_model", "llama-3.3-70b-versatile"),
                 gemini_api_key=data["ai"].get("gemini_api_key", ""),
-                gemini_model=data["ai"].get("gemini_model", "gemini-2.0-flash-lite"),
+                gemini_model=data["ai"].get("gemini_model", "gemini-flash-latest"),
                 anthropic_api_key=data["ai"].get("anthropic_api_key", ""),
-                anthropic_model=data["ai"].get("anthropic_model", "claude-sonnet-4-20250514"),
+                anthropic_model=data["ai"].get("anthropic_model", "claude-sonnet-5"),
                 max_tokens=data["ai"].get("max_tokens", 1024),
             ),
             output_folders=OutputFoldersConfig(
@@ -229,7 +229,7 @@ class Config:
             ),
             instagram=InstagramConfig(
                 cookies_file=data.get("instagram", {}).get("cookies_file") or None,
-                video_model=data.get("instagram", {}).get("video_model", "gemini-2.0-flash"),
+                video_model=data.get("instagram", {}).get("video_model", "gemini-flash-latest"),
                 max_duration_seconds=data.get("instagram", {}).get("max_duration_seconds", 180),
                 export_dir=data.get("instagram", {}).get("export_dir", ""),
             ),

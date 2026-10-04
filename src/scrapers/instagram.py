@@ -59,7 +59,7 @@ class InstagramScraper(BaseScraper):
     def __init__(
         self,
         gemini_api_key: str = "",
-        video_model: str = "gemini-2.0-flash",
+        video_model: str = "gemini-flash-latest",
         cookies_file: str | None = None,
         max_duration_seconds: int = 180,
     ):

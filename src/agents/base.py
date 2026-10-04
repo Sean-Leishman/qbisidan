@@ -22,10 +22,10 @@ class BaseAgent:
             self.model = model or "llama-3.3-70b-versatile"
             self._init_groq()
         elif provider == "gemini":
-            self.model = model or "gemini-2.0-flash"
+            self.model = model or "gemini-flash-latest"
             self._init_gemini()
         else:
-            self.model = model or "claude-sonnet-4-20250514"
+            self.model = model or "claude-sonnet-5"
             self._init_anthropic()
 
     def _init_groq(self):

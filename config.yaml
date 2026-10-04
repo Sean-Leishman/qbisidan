@@ -15,11 +15,11 @@ ai:
 
   # Gemini (free tier)
   gemini_api_key: "${GEMINI_API_KEY}"
-  gemini_model: "gemini-2.0-flash"
+  gemini_model: "gemini-flash-latest"
 
   # Anthropic (paid)
   anthropic_api_key: "${ANTHROPIC_API_KEY}"
-  anthropic_model: "claude-sonnet-4-20250514"
+  anthropic_model: "claude-sonnet-5"
 
   max_tokens: 8192
 
@@ -69,7 +69,7 @@ instagram:
   # description). Must accept video input via the Files API. Video understanding
   # ALWAYS uses this Gemini key/model even if ai.provider is groq/anthropic —
   # Anthropic can't take raw video and Groq is audio-only.
-  video_model: "gemini-2.0-flash"
+  video_model: "gemini-flash-latest"
   # Video is ~300 tokens/second (a 60s reel is ~18k tokens). A reel longer than
   # this skips the Gemini call and produces a caption-only note instead.
   max_duration_seconds: 180

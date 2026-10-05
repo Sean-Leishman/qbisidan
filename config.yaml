@@ -98,7 +98,8 @@ channel_crawl:
 
 # Places map (python main.py --places): saved venues grouped and mapped.
 places:
-  home: null            # [lon, lat] -- set this for walk/ride times from your door
+  home: null            # null = `origin` in ~/.config/personal/locations.toml (dotfiles);
+                        # or a name from that file ("moorgate"), or [lon, lat] to override
   city: "London"
   country: "gb"
   region_km: 30         # a local venue geocoding further than this from home is treated as not found

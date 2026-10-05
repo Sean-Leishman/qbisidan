@@ -15,8 +15,10 @@ import html
 import json
 import logging
 import math
+import os
 import re
 import time
+import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -51,6 +53,35 @@ class Place:
     walk_s: float | None = None
     bike_s: float | None = None
     note: str | None = None      # why it is unplaced
+
+
+# ---------------------------------------------------------------- where "from me" is
+
+def shared_locations_path() -> Path:
+    return Path(os.environ.get("PERSONAL_LOCATIONS", "~/.config/personal/locations.toml")).expanduser()
+
+
+def resolve_point(value=None, path=None):
+    """A point to measure from: [lon, lat] as given; a name looked up in the shared
+    locations file (~/.config/personal/locations.toml, versioned in dotfiles); or, given
+    nothing, that file's `origin`. None if none of those exist -- times are then omitted,
+    never measured from a guessed place."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (float(value[0]), float(value[1]))
+    path = Path(path) if path else shared_locations_path()
+    try:
+        shared = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        if value:
+            raise ValueError(f"location {value!r} named, but {path} is missing or unreadable")
+        return None
+    name = value or shared.get("origin")
+    if not name:
+        return None
+    point = (shared.get("locations") or {}).get(name)
+    if not (isinstance(point, list) and len(point) == 2):
+        raise ValueError(f"no location called {name!r} in {path}")
+    return (float(point[0]), float(point[1]))
 
 
 # ---------------------------------------------------------------- cached, polite HTTP

@@ -215,3 +215,34 @@ class TestClassifyCache:
         assert [p.category for p in first] == ["food", "unsorted"]
         assert calls == [["dishoom daal", "mystery"], ["mystery"]], "a success is not paid for twice; a failure is retried"
         assert second[0].url == "u1" and second[0].venue == "Dishoom"
+
+
+class TestSharedLocations:
+    def write(self, tmp_path, body):
+        f = tmp_path / "locations.toml"
+        f.write_text(body)
+        return f
+
+    def test_nothing_set_uses_the_shared_origin(self, tmp_path):
+        from src.places import resolve_point
+        f = self.write(tmp_path, 'origin = "moorgate"\n[locations]\nmoorgate = [-0.08906, 51.51825]\n')
+        assert resolve_point(None, f) == (-0.08906, 51.51825)
+
+    def test_a_name_and_explicit_coordinates(self, tmp_path):
+        from src.places import resolve_point
+        f = self.write(tmp_path, 'origin = "a"\n[locations]\na = [1, 2]\nb = [3, 4]\n')
+        assert resolve_point("b", f) == (3.0, 4.0)
+        assert resolve_point([5, 6], f) == (5.0, 6.0), "coordinates override the file"
+
+    def test_no_file_means_no_times_not_a_guess(self, tmp_path):
+        from src.places import resolve_point
+        assert resolve_point(None, tmp_path / "missing.toml") is None
+
+    def test_a_named_location_that_does_not_exist_is_an_error(self, tmp_path):
+        """A typo must fail loudly, not silently measure everything from nowhere."""
+        from src.places import resolve_point
+        f = self.write(tmp_path, '[locations]\nmoorgate = [1, 2]\n')
+        with pytest.raises(ValueError, match="moorgte"):
+            resolve_point("moorgte", f)
+        with pytest.raises(ValueError):
+            resolve_point("moorgate", tmp_path / "missing.toml")

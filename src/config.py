@@ -156,7 +156,7 @@ class ChannelCrawlConfig:
 @dataclass
 class PlacesConfig:
     """The places map: where saved venues are measured from, and where it is written."""
-    home: list[float] | None = None  # [lon, lat]; walk/ride times are omitted until set
+    home: list[float] | str | None = None  # [lon, lat], a name, or None = shared origin
     city: str = "London"             # added to a venue with no area, and bounds the search
     country: str = "gb"
     region_km: float = 30.0          # local venues must geocode within this of home

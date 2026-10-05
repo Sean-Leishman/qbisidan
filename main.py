@@ -160,11 +160,14 @@ def run_places(config, extra_files, home_override) -> int:
     """Saved venues -> grouped map. Sources: To Be Eaten, JSON item files, Instagram export."""
     import json
     from src.agents.place_classifier import PlaceClassifierAgent
-    from src.places import Http, build, classify, from_to_be_eaten, geojson, render, summary
+    from src.places import Http, build, classify, from_to_be_eaten, geojson, render, resolve_point, summary
 
     logger = logging.getLogger(__name__)
     pc = config.places
-    home = home_override or (tuple(pc.home) if pc.home else None)
+    # --home, then places.home (coordinates or a name), then the shared locations file
+    home = home_override or resolve_point(pc.home)
+    if home:
+        print(f"Measuring from {pc.home or 'the shared origin'} at {home[1]:.5f}, {home[0]:.5f}")
     cache = Path(".cache/places")
 
     places = from_to_be_eaten(config.vault_path / pc.to_be_eaten)

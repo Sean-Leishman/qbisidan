@@ -399,10 +399,15 @@ document.getElementById('counts').textContent =
   `${D.placed.length} on the map \\u00b7 ${D.unplaced.length} unplaced \\u00b7 ${D.travel.length} travel \\u00b7 ${D.other} not places`;
 
 const map = L.map('map');
+// The view must exist before any marker is added: Leaflet's renderer reads the map's bounds
+// on add and throws "reading 'intersects'" without one -- which killed the whole script.
+const bounds = D.placed.map(p => [p.point[1], p.point[0]]);
+if (D.home) bounds.push([D.home[1], D.home[0]]);
+if (bounds.length) map.fitBounds(bounds, {padding: [24, 24], maxZoom: 15}); else map.setView([51.507, -0.128], 11);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
-const layers = {}, bounds = [];
+const layers = {};
 for (const p of D.placed) {
-  const [lon, lat] = p.point; bounds.push([lat, lon]);
+  const [lon, lat] = p.point;
   const box = el('div'); box.append(el('div', 'name', p.venue || p.text.slice(0, 40)));
   if (p.area) box.append(el('div', 'why', p.area));
   if (times(p)) box.append(el('div', null, times(p)));
@@ -411,8 +416,7 @@ for (const p of D.placed) {
   const m = L.circleMarker([lat, lon], {radius: 8, color: '#0005', weight: 1, fillColor: D.colours[p.category], fillOpacity: .9}).bindPopup(box);
   (layers[p.category] ||= L.layerGroup().addTo(map)).addLayer(m);
 }
-if (D.home) { L.circleMarker([D.home[1], D.home[0]], {radius: 7, color: '#2563eb', weight: 3, fillOpacity: .2}).bindPopup('Home').addTo(map); bounds.push([D.home[1], D.home[0]]); }
-if (bounds.length) map.fitBounds(bounds, {padding: [24, 24]}); else map.setView([51.507, -0.128], 11);
+if (D.home) L.circleMarker([D.home[1], D.home[0]], {radius: 7, color: '#2563eb', weight: 3, fillOpacity: .2}).bindPopup('Measured from here').addTo(map);
 
 const chips = document.getElementById('chips');
 for (const cat of Object.keys(D.colours)) {

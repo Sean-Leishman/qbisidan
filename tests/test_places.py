@@ -191,6 +191,13 @@ class TestLinksAndRender:
         assert "<script>alert" not in page and "</script><script>" not in page
         assert page.count("<script") == 2 and page.count("</script>") == 2, "only the page's own tags"
 
+    def test_the_map_has_a_view_before_any_marker_is_added(self):
+        """Found by screenshot: Leaflet threw on the first marker because fitBounds came after
+        the loop, so the page showed a map with no pins, no filters and no lists."""
+        page = render([Place("food", "X", point=(-0.07, 51.52))], home=(-0.089, 51.518))
+        script = page[page.index("const map"):]
+        assert script.index("fitBounds") < script.index("circleMarker")
+
     def test_page_carries_every_section(self):
         places = [Place("food", "Dishoom", point=(-0.07, 51.52)), Place("pub", "Nowhere", note="couldn't find it"),
                   Place("travel", None, "Lisbon", text="rooftop"), Place("other"), Place("unsorted", text="?")]

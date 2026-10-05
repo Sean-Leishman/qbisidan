@@ -95,3 +95,12 @@ channel_crawl:
   transcript_filter_chars: 1500   # chars of desc+transcript used in stage-2 filter
   state_file: "data/crawl_state.json"
   manifest_timeout_seconds: 120   # how long the Telegram model-choice manifest waits for Start/Cancel
+
+# Places map (python main.py --places): saved venues grouped and mapped.
+places:
+  home: null            # [lon, lat] -- set this for walk/ride times from your door
+  city: "London"
+  country: "gb"
+  region_km: 30         # a local venue geocoding further than this from home is treated as not found
+  out_dir: "out"
+  to_be_eaten: "08 Trackers/To Be Eaten.md"

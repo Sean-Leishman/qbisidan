@@ -154,6 +154,17 @@ class ChannelCrawlConfig:
 
 
 @dataclass
+class PlacesConfig:
+    """The places map: where saved venues are measured from, and where it is written."""
+    home: list[float] | None = None  # [lon, lat]; walk/ride times are omitted until set
+    city: str = "London"             # added to a venue with no area, and bounds the search
+    country: str = "gb"
+    region_km: float = 30.0          # local venues must geocode within this of home
+    out_dir: str = "out"
+    to_be_eaten: str = "08 Trackers/To Be Eaten.md"  # read-only: your list, never written
+
+
+@dataclass
 class Config:
     vault_path: Path
     telegram: TelegramConfig
@@ -164,6 +175,7 @@ class Config:
     vault_writer: VaultWriterConfig = field(default_factory=VaultWriterConfig)
     channel_crawl: ChannelCrawlConfig = field(default_factory=ChannelCrawlConfig)
     interests: InterestsConfig = field(default_factory=InterestsConfig)
+    places: PlacesConfig = field(default_factory=PlacesConfig)
     backfill: BackfillConfig = field(default_factory=BackfillConfig)
     routing_categories: list[RoutingCategory] = field(default_factory=list)
 
@@ -245,6 +257,10 @@ class Config:
                 state_file=data.get("channel_crawl", {}).get("state_file", "data/crawl_state.json"),
                 manifest_timeout_seconds=data.get("channel_crawl", {}).get("manifest_timeout_seconds", 120.0),
             ),
+            places=PlacesConfig(**{
+                k: v for k, v in (data.get("places") or {}).items()
+                if k in PlacesConfig.__dataclass_fields__
+            }),
             interests=InterestsConfig(
                 include=data.get("interests", {}).get("include", []),
                 exclude=data.get("interests", {}).get("exclude", []),

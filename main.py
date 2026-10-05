@@ -156,6 +156,73 @@ def run_backfill(
     return 1
 
 
+def run_places(config, extra_files, home_override) -> int:
+    """Saved venues -> grouped map. Sources: To Be Eaten, JSON item files, Instagram export."""
+    import json
+    from src.agents.place_classifier import PlaceClassifierAgent
+    from src.places import Http, build, classify, from_to_be_eaten, geojson, render, summary
+
+    logger = logging.getLogger(__name__)
+    pc = config.places
+    home = home_override or (tuple(pc.home) if pc.home else None)
+    cache = Path(".cache/places")
+
+    places = from_to_be_eaten(config.vault_path / pc.to_be_eaten)
+    items = []
+    for f in extra_files:
+        items += [{**it, "source": it.get("source") or Path(f).stem} for it in json.loads(Path(f).read_text())]
+
+    if config.instagram.export_dir:
+        from src.scrapers.instagram import InstagramScraper
+        from src.scrapers.instagram_export import load_instagram_export
+        stubs = load_instagram_export(config.instagram.export_dir, "saved")
+        captions_path = cache / "captions.json"
+        captions = json.loads(captions_path.read_text()) if captions_path.exists() else {}
+        scraper = InstagramScraper(gemini_api_key=config.ai.gemini_api_key,
+                                   video_model=config.instagram.video_model,
+                                   cookies_file=config.instagram.cookies_file)
+        fetched = 0
+        for stub in stubs:
+            if stub.url not in captions:
+                if fetched >= config.backfill.max_items:
+                    continue  # the cap is per run; the rest are picked up next time
+                try:
+                    captions[stub.url] = scraper.get_metadata(stub.url).get("caption") or ""
+                    fetched += 1
+                except Exception as e:
+                    logger.warning(f"caption unavailable for {stub.url}: {e}")
+                    continue
+            if captions.get(stub.url):
+                items.append({"text": captions[stub.url], "url": stub.url, "source": "Instagram"})
+        captions_path.parent.mkdir(parents=True, exist_ok=True)
+        captions_path.write_text(json.dumps(captions))
+        remaining = sum(1 for s in stubs if s.url not in captions)
+        if remaining:
+            print(f"{remaining} saved posts not fetched yet (cap {config.backfill.max_items}/run) -- run again")
+
+    if items:
+        classifier = PlaceClassifierAgent(provider=config.ai.provider, api_key=config.ai.api_key,
+                                          model=config.ai.model, max_tokens=4096)
+        places += classify(items, classifier, cache)
+
+    build(places, Http(cache / "http"), city=pc.city, country=pc.country, home=home, region_km=pc.region_km)
+
+    out = Path(pc.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "places.html").write_text(render(places, home), encoding="utf-8")
+    (out / "places.geojson").write_text(json.dumps(geojson(places, home), indent=1), encoding="utf-8")
+
+    s = summary(places)
+    print(f"{len(s['placed'])} on the map, {len(s['unplaced'])} unplaced, "
+          f"{len(s['travel'])} travel, {s['other']} not places, {len(s['unsorted'])} unsorted")
+    for p in s["unplaced"]:
+        print(f"  unplaced: {p.venue or p.text[:50]} -- {p.note}")
+    if not home:
+        print("No home set (places.home in config.yaml), so no walk/ride times.")
+    print(f"wrote {out / 'places.html'}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Obsidian Helper - Automated bookmark processing"
@@ -220,6 +287,23 @@ def main() -> int:
         help="Ignore any saved crawl state and start fresh",
     )
     parser.add_argument(
+        "--places",
+        action="store_true",
+        help="Build the places map from To Be Eaten, the Instagram export and --places-from files",
+    )
+    parser.add_argument(
+        "--places-from",
+        metavar="FILE",
+        action="append",
+        default=[],
+        help='JSON list of {"text": ..., "url": ...} items to classify and map (repeatable)',
+    )
+    parser.add_argument(
+        "--home",
+        metavar="LON,LAT",
+        help="Override places.home for this run",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -238,7 +322,7 @@ def main() -> int:
         return 1
 
     # Validate config — Telegram only needed for poll/watch modes.
-    needs_telegram = not (args.test or args.crawl or args.backfill)
+    needs_telegram = not (args.test or args.crawl or args.backfill or args.places)
     if needs_telegram and not config.telegram.bot_token:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return 1
@@ -247,6 +331,9 @@ def main() -> int:
         return 1
 
     # Run appropriate mode
+    if args.places:
+        home = tuple(float(v) for v in args.home.split(",")) if args.home else None
+        return run_places(config, args.places_from, home)
     if args.crawl:
         return run_crawl(
             config, args.crawl, args.crawl_from, args.crawl_to,

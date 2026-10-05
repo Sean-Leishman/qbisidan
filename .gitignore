@@ -37,3 +37,5 @@ DECISIONS.md
 Todo.md
 .vault
 PLAN-ingest.md
+out/
+.cache/

@@ -64,10 +64,18 @@ class BaseAgent:
     def _call_gemini(self, prompt: str) -> str:
         try:
             from google.genai import types
+            config = {"max_output_tokens": self.max_tokens}
+            # Thinking tokens share the output budget. A subclass doing a mechanical task sets
+            # THINKING_BUDGET = 0: the place classifier spent 3,486 thought tokens to emit 284
+            # tokens of JSON, and on longer batches the thoughts crowded the answer out of
+            # max_output_tokens and truncated it mid-array.
+            budget = getattr(self, "THINKING_BUDGET", None)
+            if budget is not None:
+                config["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
-                config=types.GenerateContentConfig(max_output_tokens=self.max_tokens),
+                config=types.GenerateContentConfig(**config),
             )
             return response.text
         except Exception as e:

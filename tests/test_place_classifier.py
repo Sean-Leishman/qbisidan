@@ -95,3 +95,25 @@ class TestClassify:
 
     def test_empty(self, agent):
         assert agent.classify([]) == []
+
+
+def test_classifier_turns_gemini_thinking_off():
+    """Thinking shares the output budget; for a mechanical task it truncated the JSON."""
+    seen = {}
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            seen["config"] = config
+            return type("R", (), {"text": "[]"})()
+
+    agent = PlaceClassifierAgent.__new__(PlaceClassifierAgent)
+    agent.provider, agent.model, agent.max_tokens = "gemini", "m", 100
+    agent.client = type("C", (), {"models": FakeModels()})()
+    agent._call_gemini("x")
+    assert seen["config"].thinking_config.thinking_budget == 0
+
+
+def test_a_handle_never_reaches_the_geocoder(agent, monkeypatch):
+    monkeypatch.setattr(agent, "_call", answer({"i": 0, "category": "pub", "venue": "@theroyaloakhackney", "area": "Hackney"}))
+    got = agent.classify(["best pint @theroyaloakhackney"])
+    assert got[0].category == "pub" and got[0].venue is None and got[0].area == "Hackney"

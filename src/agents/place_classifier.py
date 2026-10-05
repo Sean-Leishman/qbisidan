@@ -33,6 +33,10 @@ UNSORTED = "unsorted"
 
 
 class PlaceClassifierAgent(BaseAgent):
+    # Sorting captions is mechanical. With thinking on, Gemini spent ~12x the answer's tokens
+    # thinking, and on long batches truncated the JSON. See BaseAgent._call_gemini.
+    THINKING_BUDGET = 0
+
     PROMPT = """You are sorting things someone saved (Instagram posts, screenshots) into a places list.
 
 For each numbered item decide:
@@ -42,11 +46,17 @@ For each numbered item decide:
     food      = restaurants, cafes, bakeries, food markets
     activity  = things to do: climbing, galleries, classes, walks, sport
     travel    = a destination elsewhere -- a city, country, hotel or trip, not a local venue
-    other     = not about a place at all (memes, recipes, news, products, people)
-- venue: the place's own name exactly as written, or null if no specific place is named
+    other     = ONLY for things not about a place at all (memes, recipes, news, products, people)
+- venue: the place's own name, or null if no specific place is named
 - area: neighbourhood, city or country if the text says one, else null
 
-Do not invent names. "best spot in town" names no venue: venue is null.
+Rules:
+- A post about some unnamed place is still a place. "best spot in town" gets its most likely
+  category (or "activity" if unclear) with venue null -- never "other". Losing it is worse
+  than an imperfect category.
+- An Instagram handle is not a name. Turn "@theroyaloakhackney" into "The Royal Oak" when the
+  name is plain from the handle; if it is not, give venue null. Never return a venue with "@".
+- Do not invent names that the text does not support.
 
 Items:
 {items}
@@ -100,6 +110,8 @@ def _name(value) -> str | None:
     if not isinstance(value, str):
         return None
     value = value.strip()
+    if value.startswith("@"):
+        return None  # a handle geocodes to nothing; unplaced with its link beats a dead pin
     return value if value and value.lower() not in ("null", "none", "n/a", "unknown") else None
 
 

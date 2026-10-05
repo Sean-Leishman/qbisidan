@@ -189,7 +189,8 @@ class TestLinksAndRender:
         page = render([evil])
         assert "alert(1)" in page, "the caption is still there, as data"
         assert "<script>alert" not in page and "</script><script>" not in page
-        assert page.count("<script") == 2 and page.count("</script>") == 2, "only the page's own tags"
+        own = render([]).count("<script")
+        assert page.count("<script") == own and page.count("</script>") == own, "only the page's own tags"
 
     def test_the_map_has_a_view_before_any_marker_is_added(self):
         """Found by screenshot: Leaflet threw on the first marker because fitBounds came after
@@ -197,6 +198,12 @@ class TestLinksAndRender:
         page = render([Place("food", "X", point=(-0.07, 51.52))], home=(-0.089, 51.518))
         script = page[page.index("const map"):]
         assert script.index("fitBounds") < script.index("circleMarker")
+
+    def test_page_never_uses_the_osm_tile_servers(self):
+        """They require a Referer; a page opened from disk sends none and gets blocked."""
+        page = render([Place("food", "X", point=(-0.07, 51.52))])
+        assert "tile.openstreetmap.org" not in page
+        assert "tiles.openfreemap.org" in page and "OpenStreetMap" in page, "attribution kept"
 
     def test_page_carries_every_section(self):
         places = [Place("food", "Dishoom", point=(-0.07, 51.52)), Place("pub", "Nowhere", note="couldn't find it"),

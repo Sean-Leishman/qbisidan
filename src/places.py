@@ -369,7 +369,10 @@ def render(places, home=None, title="Places") -> str:
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
 <style>
 :root{--bg:#fff;--fg:#141414;--muted:#666;--line:#e6e6e6;--chip:#f3f3f3}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#141619;--fg:#ececec;--muted:#9aa0a6;--line:#2b2f35;--chip:#1e2126}}
@@ -404,7 +407,8 @@ const map = L.map('map');
 const bounds = D.placed.map(p => [p.point[1], p.point[0]]);
 if (D.home) bounds.push([D.home[1], D.home[0]]);
 if (bounds.length) map.fitBounds(bounds, {padding: [24, 24], maxZoom: 15}); else map.setView([51.507, -0.128], 11);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
+// Not the OSM volunteer tile servers: they require a Referer, which a page opened from disk never sends.
+L.maplibreGL({style: 'https://tiles.openfreemap.org/styles/' + (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'positron'), attribution: '<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> &copy; <a href="https://www.openmaptiles.org/" target="_blank">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'}).addTo(map);
 const layers = {};
 for (const p of D.placed) {
   const [lon, lat] = p.point;

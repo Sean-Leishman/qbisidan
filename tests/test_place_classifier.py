@@ -117,3 +117,21 @@ def test_a_handle_never_reaches_the_geocoder(agent, monkeypatch):
     monkeypatch.setattr(agent, "_call", answer({"i": 0, "category": "pub", "venue": "@theroyaloakhackney", "area": "Hackney"}))
     got = agent.classify(["best pint @theroyaloakhackney"])
     assert got[0].category == "pub" and got[0].venue is None and got[0].area == "Hackney"
+
+
+def test_why_is_kept_short_and_null_ish_is_none(agent, monkeypatch):
+    monkeypatch.setattr(agent, "_call", answer(
+        {"i": 0, "category": "food", "venue": "Dishoom", "why": "  Black daal; worth the queue. "},
+        {"i": 1, "category": "pub", "venue": "X", "why": "null"},
+        {"i": 2, "category": "pub", "venue": "Y", "why": "word " * 40},
+    ))
+    got = agent.classify(["a", "b", "c"])
+    assert got[0].why == "Black daal; worth the queue"
+    assert got[1].why is None
+    assert len(got[2].why) <= 90 and got[2].why.endswith("\u2026"), "a rambling answer is capped"
+
+
+def test_prompt_forbids_reasons_the_text_does_not_give():
+    """The reason must come from the saved text -- a made-up reputation is a wrong pin in prose."""
+    prompt = PlaceClassifierAgent.PROMPT
+    assert "ONLY from the text" in prompt and "Never add" in prompt

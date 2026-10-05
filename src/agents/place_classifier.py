@@ -23,6 +23,7 @@ class Placement:
     category: str            # one of CATEGORIES, or "unsorted" when classification failed
     venue: str | None = None  # the place's own name, if the text names one
     area: str | None = None   # neighbourhood/city to help geocoding, if stated
+    why: str | None = None    # why it's worth going, taken only from the text
 
 
 # "other" and "unsorted" are deliberately different answers. "other" is the model deciding
@@ -49,6 +50,9 @@ For each numbered item decide:
     other     = ONLY for things not about a place at all (memes, recipes, news, products, people)
 - venue: the place's own name, or null if no specific place is named
 - area: neighbourhood, city or country if the text says one, else null
+- why: at most 12 words on why this is worth going to, taken ONLY from the text -- a dish,
+  a drink, a vibe, a tip such as "book ahead". null if the text gives no reason. Never add
+  anything the text does not say: no reviews, no reputation, nothing you know from elsewhere.
 
 Rules:
 - A post about some unnamed place is still a place. "best spot in town" gets its most likely
@@ -62,7 +66,7 @@ Items:
 {items}
 
 Answer with ONLY a JSON array, one object per item, in order:
-[{{"i": 0, "category": "food", "venue": "Bao Soho", "area": "Soho, London"}}, ...]"""
+[{{"i": 0, "category": "food", "venue": "Bao Soho", "area": "Soho, London", "why": "open till 10pm"}}, ...]"""
 
     def classify(self, texts: list[str]) -> list[Placement]:
         """One Placement per text, in order. Failures come back UNSORTED, never dropped."""
@@ -97,7 +101,8 @@ Answer with ONLY a JSON array, one object per item, in order:
             category = str(row.get("category") or "").strip().lower()
             if category not in CATEGORIES:
                 continue  # an invented category is a failure for that item, so it stays unsorted
-            unsorted[i] = Placement(category, _name(row.get("venue")), _name(row.get("area")))
+            unsorted[i] = Placement(category, _name(row.get("venue")), _name(row.get("area")),
+                                    _why(row.get("why")))
         return unsorted
 
 
@@ -113,6 +118,16 @@ def _name(value) -> str | None:
     if value.startswith("@"):
         return None  # a handle geocodes to nothing; unplaced with its link beats a dead pin
     return value if value and value.lower() not in ("null", "none", "n/a", "unknown") else None
+
+
+def _why(value) -> str | None:
+    """A short reason, or None. Capped so a rambling answer cannot become a paragraph."""
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split()).strip(" .")
+    if not value or value.lower() in ("null", "none", "n/a", "unknown"):
+        return None
+    return value if len(value) <= 90 else value[:89].rstrip() + "\u2026"
 
 
 def _parse_array(response: str):

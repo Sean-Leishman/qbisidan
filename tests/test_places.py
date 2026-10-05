@@ -52,6 +52,16 @@ class TestToBeEaten:
             ("Noodles Inn", "Chinatown"), ("Tonkatsu", "Clapham Junction"), ("Just A Name", None)]
         assert all(p.category == "food" and p.source == "To Be Eaten" for p in got)
 
+    def test_your_own_note_after_a_dash_is_the_reason(self, tmp_path):
+        f = tmp_path / "t.md"
+        f.write_text("- [ ] Master Wei, Chinatown \u2014 biang biang noodles\n- [ ] Bob's, Soho - cheap pints\n"
+                     "- [ ] Noodles Inn, Chinatown\n- [ ] Cafe Co-op, Hackney\n")
+        got = from_to_be_eaten(f)
+        assert [(p.venue, p.area, p.why) for p in got] == [
+            ("Master Wei", "Chinatown", "biang biang noodles"), ("Bob's", "Soho", "cheap pints"),
+            ("Noodles Inn", "Chinatown", None), ("Cafe Co-op", "Hackney", None)], \
+            "a hyphen inside a name is not a note; only a spaced dash is"
+
     def test_missing_file_is_empty_not_an_error(self, tmp_path):
         assert from_to_be_eaten(tmp_path / "nope.md") == []
 
@@ -192,6 +202,26 @@ class TestLinksAndRender:
         own = render([]).count("<script")
         assert page.count("<script") == own and page.count("</script>") == own, "only the page's own tags"
 
+    def test_the_reason_reaches_the_page(self):
+        page = render([Place("food", "Dishoom", why="Black daal", point=(-0.07, 51.52))])
+        assert "Black daal" in page and "p.why" in page
+
+    def test_old_cache_entries_without_a_reason_are_reclassified_once(self, tmp_path):
+        import hashlib
+        key = hashlib.sha256("dishoom daal".encode()).hexdigest()[:24]
+        (tmp_path / "classified.json").write_text(json.dumps({key: {"category": "food", "venue": "Dishoom", "area": None}}))
+        calls = []
+
+        class Fake:
+            def classify(self, texts):
+                calls.append(texts)
+                return [Placement("food", "Dishoom", why="Black daal")]
+
+        got = classify([{"text": "dishoom daal"}], Fake(), tmp_path)
+        assert calls == [["dishoom daal"]] and got[0].why == "Black daal"
+        classify([{"text": "dishoom daal"}], Fake(), tmp_path)
+        assert len(calls) == 1, "and then it is cached"
+
     def test_the_map_has_a_view_before_any_marker_is_added(self):
         """Found by screenshot: Leaflet threw on the first marker because fitBounds came after
         the loop, so the page showed a map with no pins, no filters and no lists."""
@@ -227,6 +257,7 @@ class TestClassifyCache:
         first = classify(items, Fake(), tmp_path)
         second = classify(items, Fake(), tmp_path)
         assert [p.category for p in first] == ["food", "unsorted"]
+        assert first[0].why is None or isinstance(first[0].why, str)
         assert calls == [["dishoom daal", "mystery"], ["mystery"]], "a success is not paid for twice; a failure is retried"
         assert second[0].url == "u1" and second[0].venue == "Dishoom"
 

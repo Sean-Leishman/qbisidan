@@ -47,6 +47,7 @@ class Place:
     text: str = ""
     url: str | None = None
     source: str = ""
+    why: str | None = None       # why it's worth going: from the caption, or your own note
     point: tuple[float, float] | None = None  # (lon, lat)
     found_as: str | None = None
     ambiguous: int = 0           # how many distinct venues matched the name
@@ -128,11 +129,13 @@ class Http:
 # ---------------------------------------------------------------- sources
 
 TO_EAT = re.compile(r"^\s*-\s*\[ \]\s*(.+?)\s*$")
+NOTE_SPLIT = re.compile(r"\s+[\u2014\u2013-]\s+")  # " — ", " – " or " - " starts your note
 
 
 def from_to_be_eaten(path) -> list[Place]:
     """Your own list, read-only. Unticked lines only: a ticked one has been eaten.
-    "Noodles Inn, Chinatown" -> venue "Noodles Inn", area "Chinatown"."""
+    "Noodles Inn, Chinatown" -> venue "Noodles Inn", area "Chinatown".
+    "Master Wei, Chinatown — biang biang noodles" adds your own reason for going."""
     path = Path(path)
     if not path.exists():
         return []
@@ -141,9 +144,11 @@ def from_to_be_eaten(path) -> list[Place]:
         match = TO_EAT.match(line)
         if not match:
             continue
-        venue, _, area = match.group(1).partition(",")
+        entry, *note = NOTE_SPLIT.split(match.group(1), maxsplit=1)
+        venue, _, area = entry.partition(",")
         places.append(Place("food", venue.strip() or None, area.strip() or None,
-                            text=match.group(1), source="To Be Eaten"))
+                            text=match.group(1), source="To Be Eaten",
+                            why=note[0].strip() if note and note[0].strip() else None))
     return places
 
 
@@ -156,7 +161,7 @@ def classify(items, classifier, cache_dir) -> list[Place]:
     cache = Path(cache_dir) / "classified.json"
     known = json.loads(cache.read_text()) if cache.exists() else {}
     key = lambda text: hashlib.sha256(text.encode()).hexdigest()[:24]
-    todo = [it for it in items if key(it["text"]) not in known]
+    todo = [it for it in items if "why" not in known.get(key(it["text"]), {})]
     if todo:
         for it, placement in zip(todo, classifier.classify([it["text"] for it in todo])):
             if placement.category != "unsorted":  # a failure is retried next run, not remembered
@@ -167,7 +172,7 @@ def classify(items, classifier, cache_dir) -> list[Place]:
     for it in items:
         p = known.get(key(it["text"]), {"category": "unsorted"})
         out.append(Place(p["category"], p.get("venue"), p.get("area"), text=it["text"],
-                         url=it.get("url"), source=it.get("source", "")))
+                         url=it.get("url"), source=it.get("source", ""), why=p.get("why")))
     return out
 
 
@@ -332,7 +337,7 @@ def summary(places):
 
 
 def _row(p: Place) -> dict:
-    return {"category": p.category, "venue": p.venue, "area": p.area, "text": p.text[:240],
+    return {"category": p.category, "venue": p.venue, "area": p.area, "why": p.why, "text": p.text[:240],
             "source": p.source, "point": p.point, "found_as": p.found_as, "ambiguous": p.ambiguous,
             "walk_min": round(p.walk_s / 60) if p.walk_s else None,
             "bike_min": round(p.bike_s / 60) if p.bike_s else None,
@@ -384,7 +389,7 @@ header,section{padding:12px 16px}h1{font-size:19px;margin:0}h2{font-size:15px;ma
 .chip{border:1px solid var(--line);background:var(--chip);color:var(--fg);border-radius:999px;padding:4px 10px;font-size:13px;cursor:pointer}
 .chip[aria-pressed=false]{opacity:.45}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 ul{list-style:none;margin:0;padding:0}li{padding:8px 0;border-bottom:1px solid var(--line)}
-.name{font-weight:600}.links a{margin-right:10px;font-size:13px;color:inherit}.why{font-size:13px;color:var(--muted)}
+.name{font-weight:600}.reason{font-style:italic;margin:1px 0 2px}.links a{margin-right:10px;font-size:13px;color:inherit}.why{font-size:13px;color:var(--muted)}
 </style></head><body>
 <header><h1>__TITLE__</h1><div class="muted" id="counts"></div><div class="chips" id="chips"></div></header>
 <div id="map"></div>
@@ -413,6 +418,7 @@ const layers = {};
 for (const p of D.placed) {
   const [lon, lat] = p.point;
   const box = el('div'); box.append(el('div', 'name', p.venue || p.text.slice(0, 40)));
+  if (p.why) box.append(el('div', 'reason', p.why));
   if (p.area) box.append(el('div', 'why', p.area));
   if (times(p)) box.append(el('div', null, times(p)));
   if (p.ambiguous) box.append(el('div', 'why', `${p.ambiguous} places share this name \\u2014 check the pin`));
@@ -434,6 +440,7 @@ for (const cat of Object.keys(D.colours)) {
 const lists = document.getElementById('lists');
 const section = (title, items, render) => { if (!items.length) return; lists.append(el('h2', null, title)); const ul = el('ul'); items.forEach(p => ul.append(render(p))); lists.append(ul); };
 const placedItem = p => { const li = el('li'); li.append(el('div', 'name', p.venue));
+  if (p.why) li.append(el('div', 'reason', p.why));
   li.append(el('div', 'why', [p.area, times(p)].filter(Boolean).join(' \\u00b7 '))); li.append(linkRow(p)); return li; };
 for (const cat of Object.keys(D.colours)) {
   const items = D.placed.filter(p => p.category === cat).sort((a, b) => (a.walk_min ?? 1e9) - (b.walk_min ?? 1e9));

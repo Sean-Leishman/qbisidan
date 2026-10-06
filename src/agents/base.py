@@ -72,6 +72,11 @@ class BaseAgent:
             budget = getattr(self, "THINKING_BUDGET", None)
             if budget is not None:
                 config["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
+            # A classifier should give the same answer twice: re-classifying flipped The
+            # Marksman (a Sunday-roast pub) from "pub" to "food" between runs.
+            temperature = getattr(self, "TEMPERATURE", None)
+            if temperature is not None:
+                config["temperature"] = temperature
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,

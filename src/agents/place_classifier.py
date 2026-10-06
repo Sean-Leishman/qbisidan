@@ -37,6 +37,7 @@ class PlaceClassifierAgent(BaseAgent):
     # Sorting captions is mechanical. With thinking on, Gemini spent ~12x the answer's tokens
     # thinking, and on long batches truncated the JSON. See BaseAgent._call_gemini.
     THINKING_BUDGET = 0
+    TEMPERATURE = 0  # the same caption must land in the same group every time
 
     PROMPT = """You are sorting things someone saved (Instagram posts, screenshots) into a places list.
 

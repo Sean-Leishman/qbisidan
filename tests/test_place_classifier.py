@@ -111,6 +111,7 @@ def test_classifier_turns_gemini_thinking_off():
     agent.client = type("C", (), {"models": FakeModels()})()
     agent._call_gemini("x")
     assert seen["config"].thinking_config.thinking_budget == 0
+    assert seen["config"].temperature == 0, "a classifier must not flip a venue between runs"
 
 
 def test_a_handle_never_reaches_the_geocoder(agent, monkeypatch):

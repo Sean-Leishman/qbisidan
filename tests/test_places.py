@@ -126,6 +126,29 @@ class TestGeocode:
         geocode(p, http, city="London", country="gb", home=HOME)
         assert p.point == (-0.08, 51.51)
 
+    def test_a_postcode_in_the_text_picks_the_branch(self):
+        """Found live: a Padella screenshot showed SE1 1TQ (Borough); the area was summarised as
+        "London", so the Shoreditch branch -- nearer home -- was pinned."""
+        http = FakeHttp({"Padella, London": [venue("Padella, New North Place, Shoreditch", -0.082, 51.523),
+                                             venue("Padella, Southwark Street, Borough", -0.0905, 51.5054)]})
+        real_get = http.get
+
+        def get(url, params):
+            if params.get("postalcode") == "SE1 1TQ":
+                return [{"lon": "-0.0898", "lat": "51.5052", "addresstype": "postcode"}]
+            return real_get(url, params)
+
+        http.get = get
+        p = Place("food", "Padella", "London", text="Padella\n6 Southwark St, London se1 1tq\nOpen")
+        geocode(p, http, city="London", country="gb", home=HOME)
+        assert p.point == (-0.0905, 51.5054), "the postcode beats nearest-to-home"
+
+    def test_text_without_a_postcode_falls_back_as_before(self):
+        from src.places import UK_POSTCODE
+        assert UK_POSTCODE.search("best pint in east london") is None
+        assert UK_POSTCODE.search("Sunday roast at The Marksman E2") is None, "a district alone is not a full postcode"
+        assert UK_POSTCODE.search("53 Lexington Street, W1F 9AS").groups() == ("W1F", "9AS")
+
     def test_names_match_on_words_not_spelling(self):
         from src.places import same_name
         assert same_name("Master Wei", "Master Wei Xi'An") and same_name("BAO Soho", "Bao")

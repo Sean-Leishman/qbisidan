@@ -170,8 +170,9 @@ def run_places(config, extra_files, home_override) -> int:
         print(f"Measuring from {pc.home or 'the shared origin'} at {home[1]:.5f}, {home[0]:.5f}")
     cache = Path(".cache/places")
 
+    from src.places import load_inbox
     places = from_to_be_eaten(config.vault_path / pc.to_be_eaten)
-    items = []
+    items = list(load_inbox())  # screenshots sent to the bot
     for f in extra_files:
         items += [{**it, "source": it.get("source") or Path(f).stem} for it in json.loads(Path(f).read_text())]
 

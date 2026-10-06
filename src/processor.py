@@ -1034,15 +1034,19 @@ class Processor:
 
     def process_message(self, message: TelegramMessage) -> ProcessingResult:
         """Route a Telegram message to the correct handler."""
-        cmd = parse_message(message.text, message.reply_to_text)
-        logger.info(f"Routing '{message.text[:60]}' → {cmd.command_type}")
+        if message.image_file_id:
+            logger.info("Routing image → screenshot")
+            result = self._process_screenshot(message)
+        else:
+            cmd = parse_message(message.text, message.reply_to_text)
+            logger.info(f"Routing '{message.text[:60]}' → {cmd.command_type}")
 
-        if cmd.command_type == "url" and self.config.telegram.send_notifications:
-            self.telegram.send_processing_started(message.chat_id, cmd.url)
+            if cmd.command_type == "url" and self.config.telegram.send_notifications:
+                self.telegram.send_processing_started(message.chat_id, cmd.url)
 
-        handler_name = self._HANDLERS.get(cmd.command_type, "_process_inbox")
-        handler = getattr(self, handler_name)
-        result = handler(cmd, message)
+            handler_name = self._HANDLERS.get(cmd.command_type, "_process_inbox")
+            handler = getattr(self, handler_name)
+            result = handler(cmd, message)
 
         if self.config.telegram.send_notifications:
             if result.success:
@@ -1054,6 +1058,33 @@ class Processor:
                 self.telegram.send_error(message.chat_id, message.text[:100], result.error or "Unknown error")
 
         return result
+
+    def _process_screenshot(self, message: TelegramMessage) -> ProcessingResult:
+        """A screenshot sent to the bot: read it, keep it for the places map, say what it was."""
+        from datetime import date
+        from pathlib import Path
+
+        from .agents.place_classifier import PlaceClassifierAgent
+        from .places import LOCAL, add_to_inbox, classify
+        from .scrapers.screenshot import ScreenshotReader
+
+        try:
+            image = self.telegram.download_file(message.image_file_id)
+            seen = ScreenshotReader(self.config.ai.gemini_api_key, self.config.ai.gemini_model).read(
+                image, message.image_mime)
+        except Exception as e:
+            return ProcessingResult(url=None, success=False, error=f"couldn't read the screenshot: {e}")
+        if not seen and not message.text.strip():
+            return ProcessingResult(url=None, success=False, error="nothing readable in that image")
+
+        item = {"text": "\n".join(x for x in (message.text.strip(), seen) if x),
+                "source": "Screenshot", "saved": date.today().isoformat()}
+        add_to_inbox(item)  # kept before classifying: a classifier failure must not lose it
+
+        classifier = PlaceClassifierAgent(provider=self.config.ai.provider, api_key=self.config.ai.api_key,
+                                          model=self.config.ai.model, max_tokens=2048)
+        place = classify([item], classifier, Path(".cache/places"))[0]
+        return ProcessingResult(url=None, success=True, message=_screenshot_reply(place, LOCAL))
 
     def run(self) -> list[ProcessingResult]:
         """Fetch pending Telegram messages and process them."""
@@ -1070,3 +1101,23 @@ class Processor:
         successful = sum(1 for r in results if r.success)
         logger.info(f"Processed {len(results)}: {successful} ok, {len(results) - successful} failed")
         return results
+
+
+
+def _md(text: str) -> str:
+    """Escape Telegram legacy-Markdown specials so a venue called "Bob_s" cannot break the reply."""
+    return re.sub(r"([_*`\[])", r"\\\1", text or "")
+
+
+def _screenshot_reply(place, local) -> str:
+    why = f" — _{_md(place.why)}_" if place.why else ""
+    if place.category in local and place.venue:
+        return f"📍 Saved *{_md(place.venue)}* ({place.category}){why}. On the places map next build."
+    if place.category in local:
+        return (f"📍 Saved as {place.category}{why}, but I couldn't read *which* place — "
+                "it'll be on the unplaced list with the reason.")
+    if place.category == "travel":
+        return f"✈️ Saved to travel: {_md(place.area or 'somewhere')}{why}."
+    if place.category == "other":
+        return "Kept, but it doesn't look like a place, so it won't be on the map."
+    return "Kept — couldn't classify it just now; the next map build will retry."

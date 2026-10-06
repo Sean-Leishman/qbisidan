@@ -18,6 +18,8 @@ class TelegramMessage:
     text: str  # Raw message text
     date: int
     reply_to_text: str | None = None  # Text of the message being replied to
+    image_file_id: str | None = None  # a photo, or an image sent as a file
+    image_mime: str | None = None
     # Legacy fields kept for backward compatibility
     url: str | None = None
     user_notes: str | None = None
@@ -106,8 +108,20 @@ class TelegramQueue:
         if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
             return None
 
-        text = msg.get("text", "")
-        if not text.strip():
+        # A photo has no `text`, only an optional `caption`. Before 2026-10-06 that meant every
+        # screenshot sent to the bot was dropped here -- and the update offset moved past it,
+        # so it was gone for good, with no reply.
+        image_file_id = image_mime = None
+        photos = msg.get("photo") or []
+        if photos:
+            largest = max(photos, key=lambda p: p.get("file_size") or p.get("width", 0) * p.get("height", 0))
+            image_file_id, image_mime = largest["file_id"], "image/jpeg"
+        document = msg.get("document") or {}
+        if not image_file_id and str(document.get("mime_type", "")).startswith("image/"):
+            image_file_id, image_mime = document["file_id"], document["mime_type"]
+
+        text = msg.get("text") or msg.get("caption") or ""
+        if not text.strip() and not image_file_id:
             return None
 
         reply_to_text = None
@@ -122,6 +136,8 @@ class TelegramQueue:
             text=text,
             date=msg.get("date", 0),
             reply_to_text=reply_to_text,
+            image_file_id=image_file_id,
+            image_mime=image_mime,
         )
 
     def get_pending_messages(self) -> list[TelegramMessage]:
@@ -164,6 +180,20 @@ class TelegramQueue:
     def get_pending_urls(self) -> list[TelegramMessage]:
         """Deprecated: use get_pending_messages() instead."""
         return self.get_pending_messages()
+
+    def download_file(self, file_id: str, max_bytes: int = 20_000_000) -> bytes:
+        """Fetch a file the user sent (getFile, then the file URL). Bots may download up to 20 MB."""
+        response = requests.get(f"{self.base_url}/getFile", params={"file_id": file_id}, timeout=15)
+        response.raise_for_status()
+        info = response.json().get("result") or {}
+        if not info.get("file_path"):
+            raise RuntimeError("Telegram returned no file path")
+        if (info.get("file_size") or 0) > max_bytes:
+            raise RuntimeError(f"file is {info['file_size'] // 1_000_000} MB, over the {max_bytes // 1_000_000} MB limit")
+        url = self.base_url.replace("/bot", "/file/bot", 1) + "/" + info["file_path"]
+        data = requests.get(url, timeout=30)
+        data.raise_for_status()
+        return data.content
 
     def send_notification(self, chat_id: int, text: str) -> bool:
         """Send a notification message back to the user."""

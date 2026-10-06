@@ -152,6 +152,24 @@ def from_to_be_eaten(path) -> list[Place]:
     return places
 
 
+INBOX = Path("data/places_inbox.json")
+
+
+def add_to_inbox(item, path=INBOX):
+    """Keep a capture (e.g. a screenshot's text) for every future map build. Written before it
+    is classified, so a classifier failure can never lose it."""
+    path = Path(path)
+    items = json.loads(path.read_text()) if path.exists() else []
+    items.append(item)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=1))
+
+
+def load_inbox(path=INBOX) -> list[dict]:
+    path = Path(path)
+    return json.loads(path.read_text()) if path.exists() else []
+
+
 def classify(items, classifier, cache_dir) -> list[Place]:
     """items: [{"text": ..., "url": ..., "source": ...}]. One classifier for every source.
 
@@ -246,6 +264,26 @@ def _area_point(area, http, *, city, country, home, region_km):
     return None
 
 
+# A full UK postcode in the saved text is the most precise hint there is, and it is read
+# straight from the text -- no model involved. Found live: a screenshot of Padella's page
+# said "6 Southwark St, London SE1 1TQ", the classifier summarised the area as "London", and
+# the map pinned the *Shoreditch* Padella because it was nearer Moorgate.
+UK_POSTCODE = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b", re.I)
+
+
+def _postcode_point(text, http, country):
+    match = UK_POSTCODE.search(text or "")
+    if not match or country.lower() != "gb":
+        return None
+    postcode = f"{match.group(1)} {match.group(2)}".upper()
+    try:
+        results = http.get(NOMINATIM, {"postalcode": postcode, "countrycodes": country,
+                                       "format": "jsonv2", "limit": 1})
+    except Exception:
+        return None
+    return _point(results[0]) if results else None
+
+
 def geocode(place: Place, http: Http, *, city, country, home=None, region_km=30.0):
     """Find a named local venue, or say plainly why not.
 
@@ -269,7 +307,9 @@ def geocode(place: Place, http: Http, *, city, country, home=None, region_km=30.
     if not venues:
         place.note = f"couldn't find \u201c{place.venue}\u201d as a venue near {place.area or city}"
         return
-    anchor = _area_point(place.area, http, city=city, country=country, home=home, region_km=region_km) or home
+    anchor = (_postcode_point(place.text, http, country)
+              or _area_point(place.area, http, city=city, country=country, home=home, region_km=region_km)
+              or home)
     if anchor:
         venues.sort(key=lambda r: km(anchor, _point(r)))
     best = venues[0]

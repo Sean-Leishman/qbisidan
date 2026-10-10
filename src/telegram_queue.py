@@ -20,6 +20,7 @@ class TelegramMessage:
     reply_to_text: str | None = None  # Text of the message being replied to
     image_file_id: str | None = None  # a photo, or an image sent as a file
     image_mime: str | None = None
+    attempts: int = 0  # failed processing runs so far; see requeue()
     # Legacy fields kept for backward compatibility
     url: str | None = None
     user_notes: str | None = None
@@ -62,6 +63,11 @@ class TelegramQueue:
         state = self._load_state()
         state.setdefault("buffered", []).append(asdict(msg))
         self._save_state(state)
+
+    def requeue(self, msg: TelegramMessage) -> None:
+        """Hand a failed message back to the next get_pending_messages() call."""
+        msg.attempts += 1
+        self._buffer_message(msg)
 
     def _take_buffered(self) -> list[TelegramMessage]:
         state = self._load_state()

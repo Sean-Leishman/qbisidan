@@ -1055,7 +1055,9 @@ class Processor:
                 elif result.message:
                     self.telegram.send_notification(message.chat_id, result.message)
             else:
-                self.telegram.send_error(message.chat_id, message.text[:100], result.error or "Unknown error")
+                retrying = message.attempts + 1 < MAX_ATTEMPTS
+                error = _md(result.error or "Unknown error") + ("\n_Will retry next run._" if retrying else "")
+                self.telegram.send_error(message.chat_id, _md(message.text[:100]), error)
 
         return result
 
@@ -1096,12 +1098,26 @@ class Processor:
             return []
 
         logger.info(f"Found {len(messages)} messages to process")
-        results = [self.process_message(m) for m in messages]
+        results = []
+        for m in messages:
+            try:
+                result = self.process_message(m)
+            except Exception as e:  # one bad message must not lose the rest of the batch
+                logger.exception(f"Processing crashed for '{m.text[:60]}'")
+                result = ProcessingResult(url=None, success=False, error=str(e))
+            if not result.success and m.attempts + 1 < MAX_ATTEMPTS:
+                # last_update_id is already past it, so Telegram won't resend: keep it ourselves.
+                self.telegram.requeue(m)
+            results.append(result)
 
         successful = sum(1 for r in results if r.success)
         logger.info(f"Processed {len(results)}: {successful} ok, {len(results) - successful} failed")
         return results
 
+
+
+# A failed message is retried on later runs up to this many tries in total, then dropped.
+MAX_ATTEMPTS = 3
 
 
 def _md(text: str) -> str:

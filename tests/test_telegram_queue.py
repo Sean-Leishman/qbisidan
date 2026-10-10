@@ -250,3 +250,21 @@ class TestWaitForCallback:
 
         assert taps == ["v0"]  # only the tap for our message_id is yielded
         assert mock_post.call_count == 2  # but both taps get answered
+
+
+class TestRetryFailed:
+    def test_failed_message_retried_then_dropped_after_max_attempts(self, queue):
+        """A failure must not be marked done: run() requeues it until MAX_ATTEMPTS, then drops it."""
+        from src.processor import MAX_ATTEMPTS, ProcessingResult, Processor
+        from src.telegram_queue import TelegramMessage
+
+        proc = Processor.__new__(Processor)  # skip __init__: no config/AI needed
+        proc.telegram = queue
+        proc.process_message = MagicMock(side_effect=RuntimeError("scrape blew up"))
+        queue._buffer_message(TelegramMessage(1, 1, 123, "https://x.test/r", 0))
+
+        no_updates = MagicMock(json=lambda: {"result": []})
+        with patch("src.telegram_queue.requests.get", return_value=no_updates):
+            for _ in range(MAX_ATTEMPTS):
+                assert len(proc.run()) == 1
+            assert proc.run() == []

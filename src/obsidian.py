@@ -54,7 +54,7 @@ class ObsidianNoteGenerator:
 
     def _generate_filename(self, scraped: ScrapedContent) -> str:
         """Generate filename for the note."""
-        if scraped.content_type == "youtube" and scraped.author:
+        if scraped.content_type in ("youtube", "instagram") and scraped.author:
             # Format: "Author – Title.md" (but avoid duplication if author in title)
             if scraped.author.lower() in scraped.title.lower():
                 name = scraped.title

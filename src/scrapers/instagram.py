@@ -101,7 +101,7 @@ class InstagramScraper(BaseScraper):
             return {
                 "title": info.get("title") or (info.get("description") or "Untitled Reel")[:80],
                 "caption": info.get("description") or "",
-                "author": info.get("uploader"),
+                "author": info.get("channel") or info.get("uploader"),  # channel = @handle, uploader = display name
                 "upload_date": info.get("upload_date"),  # YYYYMMDD format
                 "thumbnail": info.get("thumbnail"),
                 "duration": info.get("duration"),

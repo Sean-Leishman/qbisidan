@@ -279,6 +279,8 @@ class Processor:
             summarizer = self._summarizer_for(provider) if provider else self.summarizer
             summary = summarizer.summarize(scraped, user_notes=user_notes)
             logger.info(f"AI category: {summary.category}, tags: {summary.tags}")
+            if scraped.content_type == "instagram" and summary.title:
+                scraped.title = summary.title  # Instagram only ever gives "Video by <account>"
 
             if scraped.content_type == "youtube":
                 try:

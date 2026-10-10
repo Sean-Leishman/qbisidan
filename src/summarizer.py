@@ -19,6 +19,7 @@ class SummaryResult:
     key_concepts: list[str] = field(default_factory=list)
     content_truncated: bool = False
     mentioned_sources: list[dict] = field(default_factory=list)
+    title: str | None = None  # AI title; used where the source has none (Instagram's "Video by X")
 
 
 class Summarizer(BaseAgent):
@@ -135,6 +136,7 @@ After your summary, extract metadata as JSON at the very end enclosed in ```json
 
 ```json
 {{
+  "title": "",
   "category": "<one of: {categories}>",
   "tags": [],
   "action_items": [],
@@ -145,6 +147,8 @@ After your summary, extract metadata as JSON at the very end enclosed in ```json
 ```
 
 Fields:
+
+title: a short descriptive title for what the content is about (max ~8 words, no account names, no emoji)
 
 category: choose ONE from the list above
 
@@ -244,6 +248,7 @@ mentioned_sources:
             review_questions=data.get("review_questions", []),
             key_concepts=data.get("key_concepts", []),
             mentioned_sources=data.get("mentioned_sources") or [],
+            title=(data.get("title") or "").strip() or None,
         )
 
     def summarize(self, scraped: ScrapedContent, user_notes: str | None = None) -> SummaryResult:

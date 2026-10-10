@@ -72,6 +72,13 @@ class TestParseStructuredResponse:
         assert r.category == "Programming"
         assert r.tags == ["Python"]
         assert r.action_items == ["Do X"]
+        assert r.title is None  # no title field → None, so the scraped title is kept
+
+    def test_title_parsed_blank_is_none(self, summarizer):
+        r = summarizer._parse_structured_response('S.\n```json\n{"title": " Hidden Towns of China ", "category": "Travel"}\n```')
+        assert r.title == "Hidden Towns of China"
+        r = summarizer._parse_structured_response('S.\n```json\n{"title": "", "category": "Travel"}\n```')
+        assert r.title is None
 
     def test_unfenced_json_extracted(self, summarizer):
         response = 'Summary about ML.\n{"category": "Machine Learning", "tags": ["Neural Networks"], "action_items": [], "review_questions": ["What is backprop?"], "key_concepts": ["Gradient Descent"]}'

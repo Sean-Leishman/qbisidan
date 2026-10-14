@@ -163,7 +163,7 @@ class TelegramQueue:
             response.raise_for_status()
             updates = response.json().get("result", [])
         except requests.RequestException as e:
-            print(f"Error fetching Telegram updates: {e}")
+            print(f"Error fetching Telegram updates: {self._err(e)}")
             return messages
 
         for update in updates:
@@ -187,8 +187,23 @@ class TelegramQueue:
         """Deprecated: use get_pending_messages() instead."""
         return self.get_pending_messages()
 
+    def _err(self, e: requests.RequestException) -> str:
+        """Error text safe to log or show: Telegram's own reason added, the bot token removed.
+
+        requests puts the full URL in its message, and Telegram URLs carry the token.
+        """
+        detail = getattr(e.response, "text", "") if e.response is not None else ""
+        text = f"{e} {detail}".strip()
+        return text.replace(self.bot_token, "<token>") if self.bot_token else text
+
     def download_file(self, file_id: str, max_bytes: int = 20_000_000) -> bytes:
         """Fetch a file the user sent (getFile, then the file URL). Bots may download up to 20 MB."""
+        try:
+            return self._download_file(file_id, max_bytes)
+        except requests.RequestException as e:
+            raise RuntimeError(self._err(e)) from None
+
+    def _download_file(self, file_id: str, max_bytes: int) -> bytes:
         response = requests.get(f"{self.base_url}/getFile", params={"file_id": file_id}, timeout=15)
         response.raise_for_status()
         info = response.json().get("result") or {}
@@ -212,7 +227,7 @@ class TelegramQueue:
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            print(f"Error sending Telegram notification: {e}")
+            print(f"Error sending Telegram notification: {self._err(e)}")
             return False
 
     def send_message_get_id(self, chat_id: int, text: str) -> int | None:
@@ -226,7 +241,7 @@ class TelegramQueue:
             response.raise_for_status()
             return response.json().get("result", {}).get("message_id")
         except requests.RequestException as e:
-            print(f"Error sending Telegram message: {e}")
+            print(f"Error sending Telegram message: {self._err(e)}")
             return None
 
     def edit_message(self, chat_id: int, message_id: int, text: str) -> bool:
@@ -248,7 +263,7 @@ class TelegramQueue:
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            print(f"Error editing Telegram message: {e}")
+            print(f"Error editing Telegram message: {self._err(e)}")
             return False
 
     # ── Inline keyboards (model-choice manifest) ────────────────────────────────
@@ -269,7 +284,7 @@ class TelegramQueue:
             response.raise_for_status()
             return response.json().get("result", {}).get("message_id")
         except requests.RequestException as e:
-            print(f"Error sending Telegram buttons: {e}")
+            print(f"Error sending Telegram buttons: {self._err(e)}")
             return None
 
     def edit_message_reply_markup(self, chat_id: int, message_id: int, keyboard: list[list[dict]]) -> bool:
@@ -289,7 +304,7 @@ class TelegramQueue:
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            print(f"Error editing Telegram keyboard: {e}")
+            print(f"Error editing Telegram keyboard: {self._err(e)}")
             return False
 
     def answer_callback_query(self, callback_query_id: str) -> bool:
@@ -304,7 +319,7 @@ class TelegramQueue:
             response.raise_for_status()
             return True
         except requests.RequestException as e:
-            print(f"Error answering Telegram callback query: {e}")
+            print(f"Error answering Telegram callback query: {self._err(e)}")
             return False
 
     def wait_for_callback(self, chat_id: int, message_id: int, timeout: float) -> Iterator[str]:
@@ -337,7 +352,7 @@ class TelegramQueue:
                 response.raise_for_status()
                 updates = response.json().get("result", [])
             except requests.RequestException as e:
-                print(f"Error polling Telegram updates: {e}")
+                print(f"Error polling Telegram updates: {self._err(e)}")
                 updates = []
                 time.sleep(poll_timeout)  # avoid hammering the API on a network error
 

@@ -33,10 +33,10 @@ def setup_logging(verbose: bool = False) -> None:
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler("obsidian_helper.log"),
-        ],
+        # Cron already appends stdout/stderr to the log file, so a console handler there
+        # would write every line twice. Only echo to the console when a person is watching.
+        handlers=[logging.FileHandler("obsidian_helper.log")]
+        + ([logging.StreamHandler()] if sys.stderr.isatty() else []),
     )
 
 

@@ -268,3 +268,12 @@ class TestRetryFailed:
             for _ in range(MAX_ATTEMPTS):
                 assert len(proc.run()) == 1
             assert proc.run() == []
+
+
+class TestErrorRedaction:
+    def test_token_never_in_error_text_and_telegram_reason_kept(self, tmp_path):
+        q = TelegramQueue(bot_token="123:SECRET", allowed_chat_ids=[1], state_file=str(tmp_path / "s.json"))
+        resp = MagicMock(text='{"description":"Bad Request: can\'t parse entities"}')
+        e = requests.HTTPError("400 for url: https://api.telegram.org/bot123:SECRET/sendMessage", response=resp)
+        msg = q._err(e)
+        assert "SECRET" not in msg and "<token>" in msg and "parse entities" in msg

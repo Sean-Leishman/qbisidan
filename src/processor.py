@@ -320,7 +320,7 @@ class Processor:
             if self.config.telegram.send_notifications:
                 self.telegram.send_notification(
                     message.chat_id,
-                    f"Already in vault: *{existing}*",
+                    f"Already in vault: *{_md(existing)}*",
                 )
             return ProcessingResult(url=url, success=True, title=existing)
 
@@ -1053,7 +1053,7 @@ class Processor:
         if self.config.telegram.send_notifications:
             if result.success:
                 if result.title:
-                    self.telegram.send_success(message.chat_id, result.title, result.folder or "")
+                    self.telegram.send_success(message.chat_id, _md(result.title), result.folder or "")
                 elif result.message:
                     self.telegram.send_notification(message.chat_id, result.message)
             else:

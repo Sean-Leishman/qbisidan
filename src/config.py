@@ -196,15 +196,10 @@ class Config:
         with open(config_path, "r") as f:
             raw = f.read()
 
-        # Substitute ${VAR} patterns with environment variables
-        def replace_env(match: re.Match) -> str:
-            var_name = match.group(1)
-            value = os.environ.get(var_name, "")
-            if not value:
-                print(f"Warning: Environment variable {var_name} not set")
-            return value
-
-        raw = re.sub(r"\$\{(\w+)\}", replace_env, raw)
+        # Substitute ${VAR} patterns with environment variables. Unset → "" without a
+        # warning: keys for unused providers are always unset, and main.py already
+        # fails loudly on the token and the active provider's key.
+        raw = re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), raw)
         data = yaml.safe_load(raw)
 
         return cls(

@@ -5,7 +5,7 @@ import pytest
 
 from src.agents.place_classifier import Placement
 from src.places import (
-    Place, build, classify, from_to_be_eaten, geocode, links, render, summary, travel_times,
+    Place, build, classify, from_takeout, from_to_be_eaten, geocode, links, render, summary, travel_times,
 )
 
 HOME = (-0.0886, 51.5134)
@@ -314,3 +314,28 @@ class TestSharedLocations:
             resolve_point("moorgte", f)
         with pytest.raises(ValueError):
             resolve_point("moorgate", tmp_path / "missing.toml")
+
+
+class TestTakeout:
+    CSV = ("Title,Note,URL,Tags,Comment\n"
+           "Padella,cacio e pepe,https://www.google.com/maps/place/Padella/data=!4m2!3m1!1s0x1:0x2,,\n"
+           ",,\"https://www.google.com/maps/search/51.5,-0.1\",,\n"  # bare pin: nothing says what it is
+           ",picnic spot,\"https://www.google.com/maps/search/51.5321,-0.0532\",,\n")
+
+    def test_zip_rows_become_items_and_only_dropped_pins_keep_coordinates(self, tmp_path):
+        import zipfile
+        z = tmp_path / "takeout.zip"
+        with zipfile.ZipFile(z, "w") as f:
+            f.writestr("Takeout/Saved/Want to go.csv", "﻿" + self.CSV)
+            f.writestr("Takeout/Maps/other.csv", self.CSV)  # not a saved list: ignored
+        items = from_takeout(z)
+        assert len(items) == 2
+        assert items[0]["text"] == "Padella — cacio e pepe (saved to Google Maps list: Want to go)"
+        assert items[0]["source"] == "Google Maps: Want to go" and "point" not in items[0]
+        assert items[1]["point"] == (-0.0532, 51.5321)
+
+    def test_saved_point_is_never_regeocoded(self):
+        http = FakeHttp({"Picnic, London": [venue("Picnic, Elsewhere", 0.5, 52.0)]})
+        p = Place("activity", "Picnic", point=(-0.0532, 51.5321))
+        geocode(p, http, city="London", country="gb", home=HOME)
+        assert p.point == (-0.0532, 51.5321) and http.gets == []

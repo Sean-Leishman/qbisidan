@@ -170,10 +170,13 @@ def run_places(config, extra_files, home_override) -> int:
         print(f"Measuring from {pc.home or 'the shared origin'} at {home[1]:.5f}, {home[0]:.5f}")
     cache = Path(".cache/places")
 
-    from src.places import load_inbox
+    from src.places import from_takeout, load_inbox
     places = from_to_be_eaten(config.vault_path / pc.to_be_eaten)
     items = list(load_inbox())  # screenshots sent to the bot
     for f in extra_files:
+        if not f.endswith(".json"):  # a Google Takeout zip, folder or Saved/*.csv
+            items += from_takeout(f)
+            continue
         items += [{**it, "source": it.get("source") or Path(f).stem} for it in json.loads(Path(f).read_text())]
 
     if config.instagram.export_dir:
@@ -300,7 +303,8 @@ def main() -> int:
         metavar="FILE",
         action="append",
         default=[],
-        help='JSON list of {"text": ..., "url": ...} items to classify and map (repeatable)',
+        help='JSON list of {"text": ..., "url": ...} items, or a Google Takeout zip / folder / '
+             'Saved CSV, to classify and map (repeatable)',
     )
     parser.add_argument(
         "--home",

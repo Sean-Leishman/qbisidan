@@ -10,7 +10,9 @@ Three rules shape all of it:
 - Navigation is linked out, not rebuilt: Google Maps, Apple Maps and Citymapper already do
   directions and transit better than anything here would.
 """
+import csv
 import hashlib
+import io
 import html
 import json
 import logging
@@ -19,6 +21,7 @@ import os
 import re
 import time
 import tomllib
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -152,6 +155,46 @@ def from_to_be_eaten(path) -> list[Place]:
     return places
 
 
+# Takeout → Saved: one CSV per Maps list (Favourites, Want to go, your own lists), rows of
+# Title, Note, URL (newer exports add Tags, Comment). Columns read by name, so either works.
+# ponytail: format from memory of Takeout, not yet checked against a real export.
+# Only a dropped pin's /search/lat,lon is exact. A /@lat,lon is where the map view was centred
+# when saved, which can be streets away, so those still go through the geocoder.
+URL_POINT = re.compile(r"/search/(-?\d+\.\d+),\s*\+?(-?\d+\.\d+)")
+
+
+def _takeout_csvs(path):
+    """(list name, csv text) for every saved list in a Takeout zip, folder or single CSV."""
+    path = Path(path)
+    if path.suffix == ".zip":
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if name.endswith(".csv") and "/Saved/" in f"/{name}":
+                    yield Path(name).stem, z.read(name).decode("utf-8-sig")
+    elif path.is_dir():
+        for f in sorted(path.rglob("*.csv")):
+            yield f.stem, f.read_text(encoding="utf-8-sig")
+    else:
+        yield path.stem, path.read_text(encoding="utf-8-sig")
+
+
+def from_takeout(path) -> list[dict]:
+    """Saved Google Maps places as classifier items. Your note is the signal, so it goes in the
+    text; the list name too ("Pubs to try" says pub). A URL carrying coordinates pins it as-is."""
+    items = []
+    for list_name, text in _takeout_csvs(path):
+        for row in csv.DictReader(io.StringIO(text)):
+            title, note, url = ((row.get(k) or "").strip() for k in ("Title", "Note", "URL"))
+            if not (title or note):
+                continue  # a bare dropped pin with nothing to say what it is
+            item = {"text": " — ".join(x for x in (title, note) if x) + f" (saved to Google Maps list: {list_name})",
+                    "url": url or None, "source": f"Google Maps: {list_name}"}
+            if m := URL_POINT.search(url):
+                item["point"] = (float(m.group(2)), float(m.group(1)))  # URL is lat,lon; we keep (lon, lat)
+            items.append(item)
+    return items
+
+
 INBOX = Path("data/places_inbox.json")
 
 
@@ -190,7 +233,8 @@ def classify(items, classifier, cache_dir) -> list[Place]:
     for it in items:
         p = known.get(key(it["text"]), {"category": "unsorted"})
         out.append(Place(p["category"], p.get("venue"), p.get("area"), text=it["text"],
-                         url=it.get("url"), source=it.get("source", ""), why=p.get("why")))
+                         url=it.get("url"), source=it.get("source", ""), why=p.get("why"),
+                         point=tuple(it["point"]) if it.get("point") else None))
     return out
 
 
@@ -290,6 +334,9 @@ def geocode(place: Place, http: Http, *, city, country, home=None, region_km=30.
     The area is a *location hint*, not search text: "Master Wei, Chinatown" has a Hammersmith
     branch Nominatim lists first, and the one you meant is the branch nearest Chinatown.
     """
+    if place.point:
+        place.found_as = place.found_as or "saved coordinates"
+        return  # already pinned by its source (a Google Maps URL): never second-guess it
     if not place.venue:
         place.note = "no venue named"
         return

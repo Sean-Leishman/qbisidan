@@ -1,4 +1,5 @@
 """YouTube video scraper - extracts metadata and transcripts."""
+import os
 import re
 from datetime import datetime
 
@@ -51,7 +52,8 @@ class YouTubeScraper(BaseScraper):
             "extract_flat": False,
             "skip_download": True,
         }
-        if cookies_file:
+        # ponytail: a missing cookies file crashes yt-dlp on save, so treat it as unset
+        if cookies_file and os.path.exists(cookies_file):
             ydl_opts["cookiefile"] = cookies_file
         elif cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)

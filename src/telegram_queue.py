@@ -224,6 +224,13 @@ class TelegramQueue:
                 json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
                 timeout=10,
             )
+            # Unescaped Markdown (e.g. "_" in a URL or error) is rejected; resend as plain text.
+            if response.status_code == 400 and "parse entities" in response.text:
+                response = requests.post(
+                    f"{self.base_url}/sendMessage",
+                    json={"chat_id": chat_id, "text": text},
+                    timeout=10,
+                )
             response.raise_for_status()
             return True
         except requests.RequestException as e:

@@ -7,7 +7,9 @@ from src.agents.redrill_agent import RedrillQuestionAgent
 from src.agents.vault_writer import VaultWriter
 from src.commands import parse_message
 from src.processor import Processor
-from src.redrill import Item
+import json
+
+from src.redrill import Block, Item
 from src.telegram_queue import TelegramMessage
 
 # ── fixtures: excerpts copied from the real vault files ─────────────────────────
@@ -308,11 +310,11 @@ class FakeAgent:
     def __init__(self, fail=False):
         self.calls, self.fail = [], fail
 
-    def make(self, text):
-        self.calls.append(text)
+    def make(self, text, misses=1, prior=None):
+        self.calls.append((text, misses, list(prior or [])))
         if self.fail:
             raise RuntimeError("offline")
-        return {"question": f"Q about {text[:10]}?", "answer": f"A: {text[:10]}"}
+        return {"question": f"Q{misses} about {text[:10]}?", "answer": f"A: {text[:10]}"}
 
 
 class TestQuestions:
@@ -328,6 +330,36 @@ class TestQuestions:
         assert qa == {"question": "What's the correct version of: SSO limit?", "answer": "SSO limit — 15 chars"}
         redrill.cached_qa(item, agent, tmp_path)
         assert len(agent.calls) == 2 and not (tmp_path / "questions.json").exists()
+
+    def test_nth_miss_gets_a_new_kind_of_question_that_avoids_earlier_ones(self, tmp_path):
+        agent = FakeAgent()
+        first = redrill.cached_qa(Item("SSO limit — 15 chars", None, "t"), agent, tmp_path)
+        second = redrill.cached_qa(Item("SSO limit (2nd miss) — 15 chars", None, "t", misses=2), agent, tmp_path)
+        assert first != second and agent.calls[1][1:] == (2, [first["question"]])
+        # both stay cached under their own miss count
+        assert redrill.cached_qa(Item("SSO limit — 15 chars", None, "t", misses=2), agent, tmp_path) == second
+        assert len(agent.calls) == 2
+
+    def test_old_cache_without_miss_counts_still_serves_first_miss(self, tmp_path):
+        item = Item("deque is a linked list — blocks", None, "t")
+        (tmp_path / "questions.json").write_text(json.dumps({item.key: {"question": "old?", "answer": "a"}}))
+        assert redrill.cached_qa(item, FakeAgent(), tmp_path)["question"] == "old?"
+
+    def test_replay_counts_misses_across_blocks(self):
+        blocks = [Block(date(2026, 10, 17), "VM", "lesson", [("gap", "MMU never reads VMAs — HW walks page tables", date(2026, 10, 19))]),
+                  Block(date(2026, 10, 19), "Re-drill", "lesson", [("gap", "MMU never reads VMAs (2nd miss) — HW walks page tables", date(2026, 10, 23))]),
+                  Block(date(2026, 10, 23), "Re-drill", "lesson", [("gap", "Cost of a TLB miss — up to 4 reads", date(2026, 10, 27))])]
+        live = {redrill.head(it.text): it.misses for it in redrill.replay(blocks)}
+        assert live == {"mmu never reads vmas": 2, "cost of a tlb miss": 1}
+
+    def test_agent_escalates_prompt_by_miss_count(self):
+        agent = RedrillQuestionAgent.__new__(RedrillQuestionAgent)
+        seen = []
+        agent._call = lambda prompt: seen.append(prompt) or '{"question": "Q", "answer": "A"}'
+        agent.make("miss — fix", 3, ["earlier?"])
+        assert "THIRD" in seen[0] and "earlier?" in seen[0] and "NEVER name" in seen[0]
+        agent.make("miss — fix")
+        assert "recall question" in seen[1] and "earlier question" not in seen[1]
 
     def test_agent_parses_json_and_grounds_prompt(self):
         agent = RedrillQuestionAgent.__new__(RedrillQuestionAgent)
@@ -407,7 +439,7 @@ class TestDrillFlow:
         assert parse_message("/drill").command_type == "drill"
         p.process_message(self.msg())
         card = tg.sent[0]
-        assert card[0].startswith("*Re-drill* 1/2 · C++ Foundations") and "Q about Coroutine" in card[0]
+        assert card[0].startswith("*Re-drill* 1/2 · C++ Foundations") and "about Coroutine" in card[0]
         assert [[b["text"] for b in row] for row in card[1]] == [["Show answer"]]
         assert all(len(b["callback_data"].encode()) <= 64 for row in card[1] for b in row)
 
@@ -424,7 +456,7 @@ class TestDrillFlow:
         assert f"- Coroutine locals live on the stack while suspended (missed at confidence 4): suspending " \
                f"*returns* to the caller and pops the stack frame. — due {back.isoformat()}" in note
         card = tg.edits[-1]
-        assert "*Re-drill* 2/2" in card[0] and "Q about \\`-lutil ma" in card[0] and "_Missed, back" in card[0]
+        assert "*Re-drill* 2/2" in card[0] and "about \\`-lutil ma" in card[0] and "_Missed, back" in card[0]
 
         # The wait has ended. A late tap comes in with the next run, as a callback message.
         p.process_message(self.msg(data=tap(card, "Show answer")))

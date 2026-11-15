@@ -52,6 +52,7 @@ class Item:
     source: str = ""   # "lesson" or "quiz"
     when: date | None = None  # date of the block that last wrote it
     check: bool = False       # retired once, back for its +10 check: a Sure now retires it for good
+    misses: int = 1           # how many Gaps blocks have recorded it; drives question escalation
 
     @property
     def key(self) -> str:
@@ -253,11 +254,13 @@ def replay(blocks: list[Block]) -> list[Item]:
             gone = [it for it in live if (id(it) in earlier and same(it.text, text)) or it.key == key(text)]
             live = [it for it in live if it not in gone]
             inherited = next((it.topic for it in gone if b.topic == PHONE), None)
+            before = max((it.misses for it in gone), default=0)
             if kind == "gap":
-                live.append(Item(text, due, inherited or b.topic, b.source, b.when))
+                live.append(Item(text, due, inherited or b.topic, b.source, b.when, misses=before + 1))
             elif due and not any(it.check for it in gone):
                 # first retirement: back once at its check date. Retired again on the check → gone.
-                live.append(Item(text, due, inherited or b.topic, b.source, b.when, check=True))
+                live.append(Item(text, due, inherited or b.topic, b.source, b.when, check=True,
+                                 misses=before or 1))
     return live
 
 
@@ -370,20 +373,26 @@ def fallback_qa(item: Item) -> dict:
 
 
 def cached_qa(item: Item, agent, cache_dir: Path) -> dict:
-    """{question, answer} for an item: one model call per item, ever (cached by item key).
-    A failed call is not cached, so it's retried next time; the drill still runs on the fallback."""
+    """{question, answer} for an item: one model call per (item, miss count), cached. Rewording
+    the same question is not a new cue, so the Nth miss gets a question of a new kind (see
+    RedrillQuestionAgent) that avoids every earlier one. A failed call is not cached, so it's
+    retried next time; the drill still runs on the fallback."""
     cache = Path(cache_dir) / "questions.json"
     known = json.loads(cache.read_text()) if cache.exists() else {}
-    if item.key in known:
+    slot = f"{item.key}:{item.misses}"
+    if slot in known:
+        return known[slot]
+    if item.misses == 1 and item.key in known:  # cache written before miss counts existed
         return known[item.key]
+    prior = [qa["question"] for k, qa in known.items() if k.split(":")[0] == item.key]
     qa = None
     try:
-        qa = agent.make(item.text) if agent else None
+        qa = agent.make(item.text, item.misses, prior) if agent else None
     except Exception as e:
         logger.warning(f"Re-drill question failed for {item.key}: {e}")
     if not qa:
         return fallback_qa(item)
-    known[item.key] = qa
+    known[slot] = qa
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(known, indent=1, ensure_ascii=False))
     return qa

@@ -56,3 +56,17 @@ class TestEnsureSourceNote:
         path1 = writer.ensure_source_note("Sapiens", "book")
         path2 = writer.ensure_source_note("Sapiens: A Brief History of Humankind", "book")
         assert path1 != path2
+
+
+class TestDailyLog:
+    def test_lines_append_in_order_inside_their_section(self, writer):
+        from datetime import date
+        d = date(2026, 11, 15)
+        for line in ("16:05 first", "16:10 second", "16:11 third"):
+            writer.append_to_daily_note(line, target_date=d)
+        writer.append_task_to_daily_note("a task", target_date=d)
+        content = writer._daily_note_path(d).read_text(encoding="utf-8")
+        notes = content.split("### Notes\n", 1)[1].split("***", 1)[0]
+        assert notes == "- 16:05 first\n- 16:10 second\n- 16:11 third\n\n"
+        assert "- [ ] a task" in content.split("### Tasks\n", 1)[1].split("***", 1)[0]
+        assert content.count("### Notes") == 1

@@ -141,6 +141,7 @@ class Processor:
         "`<URL> | my notes` — same, with personal context\n"
         "_(reply to Created note: msg)_ — append question to that note\n\n"
         "*Capture*\n"
+        "`<text>` — timed line in today's daily note\n"
         "`/todo <text>` — Inbox\n"
         "`/todo <text> @<date>` — Deadlines\n"
         "`/someday <text>` — Someday\n"
@@ -995,11 +996,15 @@ class Processor:
             logger.exception("Error processing question")
             return ProcessingResult(url=None, success=False, error=str(e))
 
-    def _process_inbox(self, cmd: ParsedCommand, _: TelegramMessage) -> ProcessingResult:
-        """Plain text default → 08 Trackers/Inbox.md"""
+    def _process_inbox(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        """Plain text default → a timed line in that day's daily note, ### Notes (a log, not todos;
+        /todo still goes to the Inbox). The command type keeps its old name, "inbox"."""
+        from datetime import datetime
+        sent = datetime.fromtimestamp(message.date) if message.date else datetime.now()
         try:
-            self.vault_writer.append_to_inbox(cmd.text)
-            return ProcessingResult(url=None, success=True, message=f"Added to Inbox: {cmd.text[:60]}")
+            # The send time, not now: a retried or late-fetched message lands where you wrote it.
+            self.vault_writer.append_to_daily_note(f"{sent:%H:%M} {cmd.text}", target_date=sent.date())
+            return ProcessingResult(url=None, success=True, message=f"Logged: {cmd.text[:60]}")
         except Exception as e:
             logger.exception("Error processing inbox")
             return ProcessingResult(url=None, success=False, error=str(e))

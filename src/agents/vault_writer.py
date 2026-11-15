@@ -218,8 +218,12 @@ cssclasses:
         content = path.read_text(encoding="utf-8")
         match = re.search(rf"(### {re.escape(section)}\n)", content)
         if match:
+            # Append at the END of the section, so the day reads in the order it happened.
             pos = match.end()
-            content = content[:pos] + line + "\n" + content[pos:]
+            nxt = re.search(r"^(\*\*\*|#{1,3} )", content[pos:], re.MULTILINE)
+            end = pos + nxt.start() if nxt else len(content)
+            body = content[pos:end].rstrip("\n")
+            content = content[:pos] + (body + "\n" if body else "") + line + "\n\n" + content[end:]
         else:
             content = content.rstrip() + f"\n\n### {section}\n{line}\n"
         path.write_text(content, encoding="utf-8")

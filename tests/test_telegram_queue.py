@@ -318,3 +318,15 @@ class TestMissedUpdates:
     def test_first_ever_run_is_not_a_gap(self, queue):
         _, notify = self._fetch(queue, first_id=5_000_000)
         notify.assert_not_called()
+
+
+def test_second_poller_is_refused_until_the_first_exits(tmp_path):
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("main_mod", Path(__file__).parent.parent / "main.py")
+    main_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main_mod)
+    lock = str(tmp_path / "run.lock")
+    first = main_mod.poll_lock(lock)
+    assert first is not None and main_mod.poll_lock(lock) is None
+    first.close()
+    assert main_mod.poll_lock(lock) is not None

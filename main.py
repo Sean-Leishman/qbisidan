@@ -40,6 +40,21 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+def poll_lock(path: str = "data/run.lock"):
+    """Only one process may poll Telegram (a second gets 409 Conflict). A run waiting on button
+    taps can outlast the 5-minute cron interval, or a laptop sleep can stack runs, so a later
+    run that finds the lock held just exits. Returns the held file (keep it open), or None."""
+    import fcntl
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
 def run_once(config: Config) -> int:
     """Run the processor once and exit."""
     processor = Processor(config)
@@ -354,11 +369,14 @@ def main() -> int:
         )
     if args.test:
         return test_url(config, args.test)
-    elif args.watch:
+    lock = poll_lock()
+    if lock is None:
+        logging.getLogger(__name__).info("Another run is still polling Telegram; skipping this one")
+        return 0
+    if args.watch:
         run_watch(config, args.interval)
         return 0
-    else:
-        return run_once(config)
+    return run_once(config)
 
 
 if __name__ == "__main__":

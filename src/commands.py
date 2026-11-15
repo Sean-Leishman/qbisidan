@@ -174,6 +174,7 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         week            — /week              → list This Week
         triage          — /triage            → step through Inbox + last week's leftovers
         digest          — /digest            → write this ISO week's digest (04 Indexes/Digests)
+        drill           — /drill             → spaced re-drill of due lesson gaps, one card at a time
         read            — /read              → 08 Trackers/To Be Read.md
         watch           — /watch             → 08 Trackers/To Be Watched.md
         fleeting_note   — /note              → 01 Fleeting Notes/<auto-title>.md
@@ -209,6 +210,8 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         return ParsedCommand(command_type="week", text="")
     if re.match(r"/triage\b", text, re.IGNORECASE):
         return ParsedCommand(command_type="triage", text="")
+    if re.match(r"/drill\b", text, re.IGNORECASE):
+        return ParsedCommand(command_type="drill", text="")
 
     # /ai [claude:|chatgpt:|...] <pasted answer> — ahead of the reply and URL checks: pasted
     # answers are full of links, and the whole paste is the content.

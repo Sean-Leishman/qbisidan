@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from .. import todos
+from .. import redrill, todos
 from ..digest import DIGESTS_FOLDER
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,29 @@ cssclasses:
             path.write_text(new, encoding="utf-8")
             logger.info(f"Updated tracker {todos.TRACKERS[code]}")
         return result
+
+    # ── Re-drills ──────────────────────────────────────────────────────────────
+
+    def read_redrill_sources(self) -> tuple[list[tuple[str, str]], str]:
+        """([(lesson filename, content)] sorted by name, Quiz-log Todo.md content or "")."""
+        folder = self.vault_path / redrill.LESSONS
+        lessons = sorted((p.name, p.read_text(encoding="utf-8")) for p in folder.glob("*.md")) \
+            if folder.is_dir() else []
+        quiz = self.vault_path / redrill.QUIZ_LOG
+        return lessons, quiz.read_text(encoding="utf-8") if quiz.exists() else ""
+
+    def read_redrill_results(self, today: date) -> str:
+        path = self.vault_path / redrill.LESSONS / redrill.note_name(today)
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def append_redrill_result(self, item, grade: str, today: date) -> Path:
+        """One graded re-drill → today's "YYYY-MM-DD Re-drill (phone).md" lesson note."""
+        path = self.vault_path / redrill.LESSONS / redrill.note_name(today)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(redrill.add_result(self.read_redrill_results(today), item, grade, today),
+                        encoding="utf-8")
+        logger.info(f"Re-drill result ({grade}) → {path.name}")
+        return path
 
     def append_to_someday(self, text: str) -> None:
         """Append to 08 Trackers/Someday.md — no-urgency parking lot."""

@@ -3,8 +3,10 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .agents.question_agent import QuestionAgent
+from .agents.redrill_agent import RedrillQuestionAgent
 from .agents.topic_filter import TopicFilterAgent
 from .agents.vault_writer import VaultWriter
 from .commands import ParsedCommand, parse_message
@@ -17,7 +19,7 @@ from .scrapers.channel import StaleCookiesError
 from .scrapers.instagram_export import ExportNotFoundError, load_instagram_export
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
-from . import digest, todos
+from . import digest, redrill, todos
 from .telegram_queue import TelegramMessage, TelegramQueue
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,12 @@ class Processor:
         # provider never gets built twice.
         self._summarizers: dict[str, Summarizer] = {config.ai.provider: self.summarizer}
         self.question_agent = QuestionAgent(
+            provider=config.ai.provider,
+            api_key=config.ai.api_key,
+            model=config.ai.model,
+            max_tokens=512,
+        )
+        self.redrill_agent = RedrillQuestionAgent(
             provider=config.ai.provider,
             api_key=config.ai.api_key,
             model=config.ai.model,
@@ -150,6 +158,7 @@ class Processor:
         "`/week` — This Week\n"
         "`/triage` — sort Inbox (also every Sunday 18:00)\n"
         "`/digest` — this week's digest (also every Sunday 18:00, monthly on the 1st)\n"
+        "`/drill` — re-drill due lesson gaps (nudge from 19:00 when any are due)\n"
         "`/note <text>` — new Fleeting Note\n"
         "`/note <url>` — raw link, no AI\n"
         "`/ai [claude:|chatgpt:] <pasted answer>` — 02 Sources/AI (one message, max 4096 chars)\n"
@@ -1092,11 +1101,19 @@ class Processor:
 
     def _send_card_and_wait(self, chat_id: int, text: str, keyboard) -> None:
         message_id = self.telegram.send_buttons(chat_id, text, keyboard)
-        if message_id is None:
-            return
+        if message_id is not None:
+            self._wait_for_taps(chat_id, message_id)
+
+    def _wait_for_taps(self, chat_id: int, message_id: int) -> None:
         for data in self.telegram.wait_for_callback(chat_id, message_id, self.TAP_WAIT_S):
-            if self._handle_todo_tap(chat_id, message_id, data):
+            if self._handle_tap(chat_id, message_id, data):
                 break
+
+    def _handle_tap(self, chat_id: int, message_id: int, data: str) -> bool:
+        """Route a button tap by its prefix: rd: re-drills, dn:/tg: todos. True when the card is finished."""
+        if data.startswith("rd:"):
+            return self._handle_drill_tap(chat_id, message_id, data)
+        return self._handle_todo_tap(chat_id, message_id, data)
 
     def _handle_todo_tap(self, chat_id: int, message_id: int, data: str) -> bool:
         """Apply one tap and redraw its card. True when that card is finished."""
@@ -1242,6 +1259,92 @@ class Processor:
         elif reason == "failed":
             self.telegram.send_notification(chat, f"Monthly digest {label} failed (model call). It won't retry on its own.")
 
+    # ── Re-drills: /drill ──────────────────────────────────────────────────────
+    # Stateless like triage. Buttons carry "rd:a:<key>" (show answer) or "rd:g:<key>:<m|u|s>"
+    # (grade). Each grade is written to today's results lesson note at once, which drops the
+    # item out of the due list by the skip rules, so the next card is just the first item due.
+    REDRILL_CACHE = Path(".cache/redrill")
+    _GRADE_NOTE = {redrill.MISSED: "Missed, back {d}", redrill.UNSURE: "Unsure, back {d}",
+                   redrill.SURE: "Retired"}
+
+    def _drill_due(self) -> list:
+        from datetime import date
+        lessons, quiz = self.vault_writer.read_redrill_sources()
+        return redrill.collect(lessons, quiz, date.today())
+
+    def _drill_card(self, item, due: list, answer: bool = False, note: str = ""):
+        from datetime import date
+        today = date.today()
+        done = sum(redrill.tally(self.vault_writer.read_redrill_results(today), today))
+        qa = redrill.cached_qa(item, getattr(self, "redrill_agent", None), self.REDRILL_CACHE)
+        text = (f"{note}*Re-drill* {done + 1}/{done + len(due)} · {_md(item.topic)}\n\n"
+                f"{_md(qa['question'])}")
+        if not answer:
+            return text, [[{"text": "Show answer", "callback_data": f"rd:a:{item.key}"}]]
+        g = lambda label, grade: {"text": label, "callback_data": f"rd:g:{item.key}:{grade}"}
+        return (text + f"\n\n*Answer:* {_md(qa['answer'])}",
+                [[g("\u2717 Missed", redrill.MISSED)],
+                 [g("\u2713 Unsure (1\u20132)", redrill.UNSURE), g("\u2713 Sure (3\u20134)", redrill.SURE)]])
+
+    def _drill_next(self, due: list, note: str = ""):
+        """(text, keyboard) for the first due item; (done text, []) when none are left."""
+        from datetime import date
+        if due:
+            return self._drill_card(due[0], due, note=note)
+        today = date.today()
+        m, u, r = redrill.tally(self.vault_writer.read_redrill_results(today), today)
+        if not m + u + r:
+            return "Nothing due to re-drill.", []
+        return f"{note}Re-drill done: {m} missed, {u} unsure, {r} retired.", []
+
+    def _process_drill(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        text, keyboard = self._drill_next(self._drill_due())
+        if keyboard:
+            self._send_card_and_wait(message.chat_id, text, keyboard)
+        else:
+            self.telegram.send_notification(message.chat_id, text)
+        return ProcessingResult(url=None, success=True)
+
+    def _handle_drill_tap(self, chat_id: int, message_id: int, data: str) -> bool:
+        """Apply one re-drill tap and redraw its card. True when the drill is finished."""
+        from datetime import date
+        parts = data.split(":")
+        if len(parts) < 3:
+            return False
+        act, k = parts[1], parts[2]
+        due = self._drill_due()
+        item = next((it for it in due if it.key == k), None)
+        if item is None:  # already graded (a double or stale tap): carry on with what's due
+            card = self._drill_next(due)
+        elif act == "a":
+            card = self._drill_card(item, due, answer=True)
+        elif act == "g" and len(parts) == 4 and parts[3] in self._GRADE_NOTE:
+            today = date.today()
+            self.vault_writer.append_redrill_result(item, parts[3], today)
+            back = redrill.new_due(parts[3], today)
+            note = "_" + self._GRADE_NOTE[parts[3]].format(d=f"{back:%a %-d %b}" if back else "") + "_\n\n"
+            card = self._drill_next(self._drill_due(), note=note)
+        else:
+            return False
+        self.telegram.edit_message(chat_id, message_id, *card)
+        return not card[1]
+
+    def _maybe_redrill_nudge(self, now=None) -> None:
+        """From 19:00, once a day, if anything is due: one message pointing at /drill."""
+        from datetime import datetime
+        now = now or datetime.now()
+        if now.hour < 19 or not self.config.telegram.allowed_chat_ids:
+            return
+        today = now.date().isoformat()
+        if self.telegram.get_flag("redrill_nudge") == today:
+            return
+        n = len(self._drill_due())
+        if not n:
+            return
+        self.telegram.set_flag("redrill_nudge", today)  # before sending: a crash must not re-send every 5 min
+        self.telegram.send_notification(self.config.telegram.allowed_chat_ids[0],
+                                        f"{n} re-drill{'s' if n != 1 else ''} due \u2014 /drill")
+
     # ── Main entry points ──────────────────────────────────────────────────────
 
     _HANDLERS = {
@@ -1252,6 +1355,7 @@ class Processor:
         "week": "_process_week",
         "triage": "_process_triage",
         "digest": "_process_digest",
+        "drill": "_process_drill",
         "url": "_process_url",
         "todo_inbox": "_process_todo_inbox",
         "todo_deadline": "_process_todo_deadline",
@@ -1281,7 +1385,11 @@ class Processor:
         """Route a Telegram message to the correct handler."""
         if message.callback_data is not None:
             # A button tapped after its run stopped waiting. Buttons carry their whole action.
-            self._handle_todo_tap(message.chat_id, message.message_id, message.callback_data)
+            finished = self._handle_tap(message.chat_id, message.message_id, message.callback_data)
+            if not finished and message.callback_data.startswith("rd:"):
+                # A drill is a back-and-forth: listen for the next tap rather than make every
+                # answer wait for the next cron run.
+                self._wait_for_taps(message.chat_id, message.message_id)
             return ProcessingResult(url=None, success=True)
         if message.image_file_id:
             logger.info("Routing image → screenshot")
@@ -1393,6 +1501,10 @@ class Processor:
             self._maybe_weekly_triage()
         except Exception:
             logger.exception("Weekly triage failed")  # never let it block message processing
+        try:
+            self._maybe_redrill_nudge()
+        except Exception:
+            logger.exception("Re-drill nudge failed")  # never let it block message processing
 
         if not messages:
             logger.info("No pending messages to process")

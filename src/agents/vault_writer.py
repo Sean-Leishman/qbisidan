@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .. import todos
+from ..digest import DIGESTS_FOLDER
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,26 @@ cssclasses:
     def append_to_watch(self, text: str) -> None:
         """Append to 08 Trackers/To Be Watched.md."""
         self._append_to_tracker("08 Trackers/To Be Watched.md", f"- [ ] {text}")
+
+    # ── Digests ────────────────────────────────────────────────────────────────
+
+    def digest_path(self, label: str) -> Path:
+        """04 Indexes/Digests/<label>.md, label being an ISO week (2026-W46) or a month (2026-11)."""
+        return self.vault_path / DIGESTS_FOLDER / f"{label}.md"
+
+    def write_digest(self, label: str, content: str) -> Path | None:
+        """Create a digest. Never overwrites: returns None if that period's digest already exists,
+        because the user may have corrected the draft."""
+        path = self.digest_path(label)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("x", encoding="utf-8") as f:  # "x": atomic create-or-fail
+                f.write(content)
+        except FileExistsError:
+            logger.info(f"Digest {label} already exists, not overwriting")
+            return None
+        logger.info(f"Wrote digest: {path}")
+        return path
 
     # ── Fleeting notes ─────────────────────────────────────────────────────────
 

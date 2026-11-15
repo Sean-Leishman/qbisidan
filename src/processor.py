@@ -17,7 +17,7 @@ from .scrapers.channel import StaleCookiesError
 from .scrapers.instagram_export import ExportNotFoundError, load_instagram_export
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
-from . import todos
+from . import digest, todos
 from .telegram_queue import TelegramMessage, TelegramQueue
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,7 @@ class Processor:
         "`/done <words>` — tick off a todo (a few words is enough)\n"
         "`/week` — This Week\n"
         "`/triage` — sort Inbox (also every Sunday 18:00)\n"
+        "`/digest` — this week's digest (also every Sunday 18:00, monthly on the 1st)\n"
         "`/note <text>` — new Fleeting Note\n"
         "`/note <url>` — raw link, no AI\n\n"
         "*Lists*\n"
@@ -1147,6 +1148,90 @@ class Processor:
         self.telegram.set_flag("triage_week", week)  # before sending: a crash must not re-send every 5 min
         self._start_triage(self.config.telegram.allowed_chat_ids[0])
 
+    # ── Digests (Nordorn CLAUDE.md "Personal Tracking") ───────────────────────
+
+    def _digest_agent(self):
+        from .agents.digest_agent import DigestAgent
+        return DigestAgent(provider=self.config.ai.provider, api_key=self.config.ai.api_key,
+                           model=self.config.ai.model, max_tokens=4096)
+
+    def _write_digest(self, inputs: "digest.DigestInputs"):
+        """(path, highlights, reason). path is None when nothing was written; reason is then
+        "exists", "empty" (no LLM call made) or "failed" (the model call or its JSON failed)."""
+        if self.vault_writer.digest_path(inputs.label).exists():
+            return None, [], "exists"  # checked before the LLM call too: no paying for a draft we'd discard
+        if inputs.is_empty():
+            return None, [], "empty"
+        draft = self._digest_agent().draft(digest.build_prompt(inputs))
+        if draft is None:
+            return None, [], "failed"
+        sections, dropped = digest.filter_cited(draft, inputs.citable())
+        prior = digest.prior_label(inputs)
+        prior = prior if self.vault_writer.digest_path(prior).exists() else None
+        path = self.vault_writer.write_digest(inputs.label, digest.render(inputs, sections, dropped, prior))
+        return path, digest.highlights(sections), "" if path else "exists"
+
+    @staticmethod
+    def _digest_written(kind: str, path, highlights: list[str]) -> str:
+        lines = [f"{kind} digest written: {_md(path.name)}"]
+        lines += [f"• {_md(digest.plain(h))}" for h in highlights[:3]]
+        return "\n".join(lines)
+
+    def _gather_week(self, monday, until=None):
+        return digest.gather_week(self.config.vault_path, monday,
+                                  self.config.vault_writer.daily_notes_folder, until=until)
+
+    def _process_digest(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        """/digest → this ISO week's digest so far. A mid-week digest is never overwritten later."""
+        from datetime import date
+        today = date.today()
+        inputs = self._gather_week(digest.week_monday(today), until=today)
+        path, highlights, reason = self._write_digest(inputs)
+        if path:
+            return ProcessingResult(url=None, success=True, message=self._digest_written("Weekly", path, highlights))
+        text = {
+            "exists": f"Digest {inputs.label} already exists. Not overwriting it.",
+            "empty": f"Nothing to digest for {inputs.label} yet: no daily-note lines or new sources.",
+        }.get(reason)
+        if text:
+            return ProcessingResult(url=None, success=True, message=text)
+        return ProcessingResult(url=None, success=False, error=f"digest {inputs.label}: the model call failed")
+
+    def _maybe_weekly_digest(self) -> None:
+        """Sunday from 18:00, or Monday if the laptop was off: digest the week once."""
+        from datetime import datetime
+        monday = digest.scheduled_week(datetime.now())
+        if monday is None or not self.config.telegram.allowed_chat_ids:
+            return
+        label = digest.week_label(monday)
+        if self.telegram.get_flag("digest_week") == label:
+            return
+        self.telegram.set_flag("digest_week", label)  # before acting: a crash must not re-run every 5 min
+        path, highlights, reason = self._write_digest(self._gather_week(monday))
+        chat = self.config.telegram.allowed_chat_ids[0]
+        if path:
+            self.telegram.send_notification(chat, self._digest_written("Weekly", path, highlights))
+        elif reason == "failed":
+            self.telegram.send_notification(chat, f"Weekly digest {label} failed (model call). It won't retry on its own.")
+
+    def _maybe_monthly_digest(self) -> None:
+        """First run on or after the 1st: synthesise the prior month's weeklies once. None → silent skip."""
+        from datetime import date
+        year, month = digest.prior_month(date.today())
+        label = digest.month_label(year, month)
+        if self.telegram.get_flag("digest_month") == label or not self.config.telegram.allowed_chat_ids:
+            return
+        self.telegram.set_flag("digest_month", label)
+        inputs = digest.gather_month(self.config.vault_path, year, month)
+        if inputs.is_empty():
+            return
+        path, highlights, reason = self._write_digest(inputs)
+        chat = self.config.telegram.allowed_chat_ids[0]
+        if path:
+            self.telegram.send_notification(chat, self._digest_written("Monthly", path, highlights))
+        elif reason == "failed":
+            self.telegram.send_notification(chat, f"Monthly digest {label} failed (model call). It won't retry on its own.")
+
     # ── Main entry points ──────────────────────────────────────────────────────
 
     _HANDLERS = {
@@ -1156,6 +1241,7 @@ class Processor:
         "done": "_process_done",
         "week": "_process_week",
         "triage": "_process_triage",
+        "digest": "_process_digest",
         "url": "_process_url",
         "todo_inbox": "_process_todo_inbox",
         "todo_deadline": "_process_todo_deadline",
@@ -1244,6 +1330,13 @@ class Processor:
         """Fetch pending Telegram messages and process them."""
         logger.info("Fetching pending messages from Telegram")
         messages = self.telegram.get_pending_messages()
+        # Digests before triage: triage blocks waiting for button taps.
+        for job, name in ((self._maybe_weekly_digest, "Weekly digest"),
+                          (self._maybe_monthly_digest, "Monthly digest")):
+            try:
+                job()
+            except Exception:
+                logger.exception(f"{name} failed")  # never let it block message processing
         try:
             self._maybe_weekly_triage()
         except Exception:

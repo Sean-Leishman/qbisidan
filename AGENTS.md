@@ -105,6 +105,9 @@ source note). Runs from cron or in long-poll watch mode.
   action items, key concepts, review questions, `content_truncated`).
 - `src/agents/vault_writer.py` — every non-bookmark write (trackers, daily
   notes, fleeting notes, projects, events, replying to bot → questions block).
+- `src/digest.py` + `src/agents/digest_agent.py` — weekly (ISO week, `2026-W46`) and monthly
+  digests into `04 Indexes/Digests/`. Grounded: uncited items are dropped; empty weeks make
+  no LLM call. Auto Sunday 18:00 / 1st of month, or `/digest`. Never overwrites.
 - `src/agents/question_agent.py` — Socratic review questions for YouTube notes.
 - `src/linker.py` — `NoteLinkEngine`: vault wikilinks, related-note lookup,
   URL-based duplicate detection, tag resolution against `03 Tags/` /

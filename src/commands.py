@@ -172,6 +172,7 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         done            — /done <words>      → tick the matching open todo (buttons if several)
         week            — /week              → list This Week
         triage          — /triage            → step through Inbox + last week's leftovers
+        digest          — /digest            → write this ISO week's digest (04 Indexes/Digests)
         read            — /read              → 08 Trackers/To Be Read.md
         watch           — /watch             → 08 Trackers/To Be Watched.md
         fleeting_note   — /note              → 01 Fleeting Notes/<auto-title>.md
@@ -206,6 +207,10 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         return ParsedCommand(command_type="week", text="")
     if re.match(r"/triage\b", text, re.IGNORECASE):
         return ParsedCommand(command_type="triage", text="")
+
+    # /digest — this week's digest, on demand
+    if re.match(r"/digest\b", text, re.IGNORECASE):
+        return ParsedCommand(command_type="digest", text="")
 
     # Reply to bot message → question about that content
     reply_title = _extract_reply_title(reply_to_text)

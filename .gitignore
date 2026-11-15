@@ -39,3 +39,4 @@ Todo.md
 PLAN-ingest.md
 out/
 .cache/
+data/run.lock

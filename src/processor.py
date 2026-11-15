@@ -1157,9 +1157,10 @@ class Processor:
         return DigestAgent(provider=self.config.ai.provider, api_key=self.config.ai.api_key,
                            model=self.config.ai.model, max_tokens=4096)
 
-    def _write_digest(self, inputs: "digest.DigestInputs"):
+    def _write_digest(self, inputs: "digest.DigestInputs", write: bool = True):
         """(path, highlights, reason). path is None when nothing was written; reason is then
-        "exists", "empty" (no LLM call made) or "failed" (the model call or its JSON failed)."""
+        "exists", "empty" (no LLM call made), "failed" (the model call or its JSON failed),
+        or "preview" (write=False: drafted, shown, not saved)."""
         if self.vault_writer.digest_path(inputs.label).exists():
             return None, [], "exists"  # checked before the LLM call too: no paying for a draft we'd discard
         if inputs.is_empty():
@@ -1168,6 +1169,8 @@ class Processor:
         if draft is None:
             return None, [], "failed"
         sections, dropped = digest.filter_cited(draft, inputs.citable())
+        if not write:
+            return None, digest.highlights(sections), "preview"
         prior = digest.prior_label(inputs)
         prior = prior if self.vault_writer.digest_path(prior).exists() else None
         path = self.vault_writer.write_digest(inputs.label, digest.render(inputs, sections, dropped, prior))
@@ -1184,13 +1187,18 @@ class Processor:
                                   self.config.vault_writer.daily_notes_folder, until=until)
 
     def _process_digest(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
-        """/digest → this ISO week's digest so far. A mid-week digest is never overwritten later."""
+        """/digest → this ISO week so far. Saved only on Sunday: digests are never overwritten, so a
+        mid-week save would stop Sunday's full-week digest from ever being written. Before then it's a preview."""
         from datetime import date
         today = date.today()
         inputs = self._gather_week(digest.week_monday(today), until=today)
-        path, highlights, reason = self._write_digest(inputs)
+        path, highlights, reason = self._write_digest(inputs, write=today.weekday() == 6)
         if path:
             return ProcessingResult(url=None, success=True, message=self._digest_written("Weekly", path, highlights))
+        if reason == "preview":
+            lines = [f"*{inputs.label} so far* (preview, not saved: Sunday's digest will be)"]
+            lines += [f"• {_md(digest.plain(h))}" for h in highlights[:3]] or ["• nothing with a source to cite yet"]
+            return ProcessingResult(url=None, success=True, message="\n".join(lines))
         text = {
             "exists": f"Digest {inputs.label} already exists. Not overwriting it.",
             "empty": f"Nothing to digest for {inputs.label} yet: no daily-note lines or new sources.",

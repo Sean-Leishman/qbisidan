@@ -311,6 +311,13 @@ class TestDigestCommand:
         again = p._process_digest(None, None)
         assert "already exists" in again.message and len(p.agent.prompts) == 1
 
+    def test_mid_week_is_a_preview_so_sundays_full_digest_still_gets_written(self, vault, monkeypatch):
+        p = make(vault)
+        at(monkeypatch, datetime(2026, 11, 11, 10, 0))  # Wednesday
+        result = p._process_digest(None, None)
+        assert result.success and "preview, not saved" in result.message
+        assert not p.vault_writer.digest_path("2026-W46").exists()
+
     def test_on_demand_empty_week(self, tmp_path, monkeypatch):
         p = make(tmp_path)
         at(monkeypatch, datetime(2026, 11, 15, 10, 0))

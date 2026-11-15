@@ -174,7 +174,8 @@ class TestQuizParsing:
         short = next(r for r in by_date[date(2026, 10, 13)] if "STL" in r.topic).events
         assert short[-1] == ("gap", "DFS O(depth) memory; BFS shortest only if unweighted", None)  # Partial:
         old = by_date[date(2026, 10, 8)][0].events
-        assert ("retired", "`constexpr`/`consteval`", None) in old  # comma-separated list
+        # comma-separated list; "Retired to +10:" with no date → back at the row's date + 10
+        assert ("retired", "`constexpr`/`consteval`", date(2026, 10, 18)) in old
 
     def test_stops_at_next_section(self):
         assert all(r.topic.startswith("Quiz log") for r in redrill.quiz_rows(QUIZ))
@@ -223,7 +224,8 @@ class TestSkipRules:
         item = Item("`pmr` is one type", date(2026, 11, 2), "Quiz log · x drill", "quiz")
         later = redrill.add_result(empty, item, redrill.SURE, date(2026, 11, 1))
         due = redrill.collect([(redrill.note_name(date(2026, 11, 1)), later)], quiz, TODAY)
-        assert heads(due) == ["other thing"]
+        assert heads(due) == ["other thing", "pmr is one type"]  # the Sure is back for its +10 check
+        assert [it.check for it in due] == [False, True] and due[1].due == date(2026, 11, 11)
 
     def test_same_is_not_too_loose(self):
         assert redrill.same("TLB-miss cost — x", "Cost of a TLB miss beyond \"a walk\" — y")
@@ -249,7 +251,7 @@ class TestResults:
                         "## Gaps\n"
                         "- deque is a linked list (committed) — deque = array of pointers to fixed blocks"
                         " — due 2026-11-19\n"
-                        "## Retired\n- Three distinct UB kinds\n")
+                        "## Retired\n- Three distinct UB kinds — back 2026-11-25\n")
         assert redrill.note_name(TODAY) == "2026-11-15 Re-drill (phone).md"
         assert redrill.tally(note, TODAY) == (1, 0, 1)
 
@@ -273,9 +275,23 @@ class TestResults:
         assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 24))}
         assert item.key in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 25))}
 
-    def test_sure_round_trip(self):
+    def test_sure_comes_back_once_at_plus_10_then_retires_for_good(self):
         item, lessons, _ = self.round_trip(redrill.SURE)
+        assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 24))}
+        back = [it for it in redrill.collect(lessons, QUIZ, date(2026, 11, 25)) if it.key == item.key]
+        assert [(it.due, it.check) for it in back] == [(date(2026, 11, 25), True)]
+        day = date(2026, 11, 25)
+        lessons += [(redrill.note_name(day), redrill.add_result("", back[0], redrill.SURE, day))]
+        assert " — back " not in lessons[-1][1].split("## Retired")[1]  # second Sure: final
         assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2027, 1, 1))}
+
+    def test_miss_on_the_check_returns_to_the_gap_cycle(self):
+        item, lessons, _ = self.round_trip(redrill.SURE)
+        day = date(2026, 11, 25)
+        back = next(it for it in redrill.collect(lessons, QUIZ, day) if it.key == item.key)
+        lessons += [(redrill.note_name(day), redrill.add_result("", back, redrill.MISSED, day))]
+        again = [it for it in redrill.collect(lessons, QUIZ, date(2026, 11, 29)) if it.key == item.key]
+        assert [(it.due, it.check) for it in again] == [(date(2026, 11, 29), False)]
 
     def test_quiz_item_round_trip(self):
         due = redrill.collect(LESSONS, QUIZ, TODAY)

@@ -33,9 +33,11 @@ PHONE = "Re-drill (phone)"
 
 MISSED, UNSURE, SURE = "m", "u", "s"
 GAP_DAYS = {MISSED: 4, UNSURE: 10}  # SURE → ## Retired. The skill's re-drill close rules.
+CHECK_DAYS = 10  # a first Sure retires to one check-back at +10 (the skill's "Retired to +10"); a second is for good
 
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DUE = re.compile(r"\s+—\s+due\s+(\d{4}-\d{2}-\d{2})\s*\.?\s*$")
+BACK = re.compile(r"\s+—\s+back\s+(\d{4}-\d{2}-\d{2})\s*\.?\s*$")  # a Retired line with its +10 check
 QUOTE = re.compile(r"^\s*(?:>\s?)*")
 STOP = {"a", "an", "the", "is", "are", "be", "of", "on", "in", "to", "for", "and", "or", "vs",
         "not", "as", "at", "by", "it", "its", "with", "from", "than", "that", "this", "when",
@@ -49,6 +51,7 @@ class Item:
     topic: str         # lesson title, or "Quiz log · <section>"
     source: str = ""   # "lesson" or "quiz"
     when: date | None = None  # date of the block that last wrote it
+    check: bool = False       # retired once, back for its +10 check: a Sure now retires it for good
 
     @property
     def key(self) -> str:
@@ -61,7 +64,7 @@ class Block:
     when: date
     topic: str
     source: str
-    events: list  # [("gap", text, due | None) | ("retired", text, None)], in order
+    events: list  # [("gap", text, due | None) | ("retired", text, check date | None)], in order
 
 
 # ── identity ──────────────────────────────────────────────────────────────────
@@ -143,11 +146,11 @@ def lesson_blocks(name: str, content: str) -> list[Block]:
             kind = "retired"
         elif kind and line.startswith("- "):
             body = line[2:].strip()
-            m = DUE.search(body)
+            m = (DUE if kind == "gap" else BACK).search(body)
             due = date.fromisoformat(m.group(1)) if m else None
-            text = DUE.sub("", body).strip()
+            text = (DUE if kind == "gap" else BACK).sub("", body).strip()
             if text:
-                blocks[-1].events.append((kind, text, due if kind == "gap" else None))
+                blocks[-1].events.append((kind, text, due))
         else:
             kind = None  # any other line (blank, ## Next, prose, a fence) ends the list
     return [b for b in blocks if b.events]
@@ -182,7 +185,7 @@ def _split_items(segment: str) -> list[str]:
     return [p.strip().rstrip(".").strip() for p in parts if p.strip(" .")]
 
 
-def quiz_cell_events(cell: str) -> list[tuple]:
+def quiz_cell_events(cell: str, when: date | None = None) -> list[tuple]:
     cell = cell.strip()
     if not cell or cell.lower().startswith("none"):
         return []
@@ -194,9 +197,13 @@ def quiz_cell_events(cell: str) -> list[tuple]:
         seg = cell[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(cell)]
         word = m.group(1).lower()
         if word == "retired":
-            # "Retired to +10" — the skill's quiz-log wording for a right answer. Treated as
-            # retired, not as a +10 due date (see the report: this one's ambiguous).
-            events += [("retired", t, None) for t in _split_items(seg)]
+            # "Retired to +10 (date)": right answers, back once for a check on that date (user's
+            # call, 2026-11-15, D-003). No date written → the row's date + 10. Plain "Retired" is final.
+            check = None
+            if "+10" in m.group(2):
+                d = DATE.search(m.group(2))
+                check = date.fromisoformat(d.group(0)) if d else (when + timedelta(days=CHECK_DAYS) if when else None)
+            events += [("retired", t, check) for t in _split_items(seg)]
         else:
             d = DATE.search(m.group(2)) if word == "due" else None
             due = date.fromisoformat(d.group(0)) if d else None
@@ -223,7 +230,7 @@ def quiz_rows(content: str) -> list[Block]:
             continue  # header and |---| rows
         section = re.sub(r"[*`]", "", _strip_parens(cells[1])).strip()
         rows.append(Block(date.fromisoformat(cells[0]), f"Quiz log · {section}", "quiz",
-                          quiz_cell_events("|".join(cells[3:]))))
+                          quiz_cell_events("|".join(cells[3:]), date.fromisoformat(cells[0]))))
     rows.reverse()  # the table is newest first
     return rows
 
@@ -245,9 +252,12 @@ def replay(blocks: list[Block]) -> list[Item]:
         for kind, text, due in b.events:
             gone = [it for it in live if (id(it) in earlier and same(it.text, text)) or it.key == key(text)]
             live = [it for it in live if it not in gone]
+            inherited = next((it.topic for it in gone if b.topic == PHONE), None)
             if kind == "gap":
-                inherited = next((it.topic for it in gone if b.topic == PHONE), None)
                 live.append(Item(text, due, inherited or b.topic, b.source, b.when))
+            elif due and not any(it.check for it in gone):
+                # first retirement: back once at its check date. Retired again on the check → gone.
+                live.append(Item(text, due, inherited or b.topic, b.source, b.when, check=True))
     return live
 
 
@@ -300,6 +310,11 @@ def new_due(grade: str, today: date) -> date | None:
     return today + timedelta(days=GAP_DAYS[grade]) if grade in GAP_DAYS else None
 
 
+def check_back(item: Item, today: date) -> date | None:
+    """A Sure on a first retirement comes back at +10; a Sure on that check is final."""
+    return None if item.check else today + timedelta(days=CHECK_DAYS)
+
+
 def empty_note(today: date) -> str:
     # The same frontmatter the skill's setup step writes for every lesson note.
     return (f"---\ncreated: {today.isoformat()}\ntags: [lesson]\nsummary:\n---\n#Inbox\n\n"
@@ -321,7 +336,9 @@ def add_result(content: str, item: Item, grade: str, today: date) -> str:
         lines.insert(lines.index("## Gaps") + 1, "## Retired")
     due = new_due(grade, today)
     section = "## Gaps" if due else "## Retired"
-    entry = f"- {item.text} — due {due.isoformat()}" if due else f"- {item.text}"
+    back = None if due else check_back(item, today)
+    entry = (f"- {item.text} — due {due.isoformat()}" if due
+             else f"- {item.text} — back {back.isoformat()}" if back else f"- {item.text}")
     i = lines.index(section) + 1
     while i < len(lines) and lines[i].startswith("- "):
         i += 1

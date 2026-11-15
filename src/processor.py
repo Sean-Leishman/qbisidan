@@ -17,6 +17,7 @@ from .scrapers.channel import StaleCookiesError
 from .scrapers.instagram_export import ExportNotFoundError, load_instagram_export
 from .search import VaultSearch, format_search_results
 from .summarizer import Summarizer
+from . import todos
 from .telegram_queue import TelegramMessage, TelegramQueue
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,9 @@ class Processor:
         "`/todo <text>` — Inbox\n"
         "`/todo <text> @<date>` — Deadlines\n"
         "`/someday <text>` — Someday\n"
+        "`/done <words>` — tick off a todo (a few words is enough)\n"
+        "`/week` — This Week\n"
+        "`/triage` — sort Inbox (also every Sunday 18:00)\n"
         "`/note <text>` — new Fleeting Note\n"
         "`/note <url>` — raw link, no AI\n\n"
         "*Lists*\n"
@@ -1009,12 +1013,149 @@ class Processor:
             logger.exception("Error processing inbox")
             return ProcessingResult(url=None, success=False, error=str(e))
 
+    # ── Todos: /done, /week, /triage ───────────────────────────────────────────
+    # Taps are handled live for TAP_WAIT_S after a card is sent; a later tap comes in with the
+    # next cron run (≤ 5 min). The wait must end before the next cron run starts polling.
+    TAP_WAIT_S = 150
+    DONE_MAX_BUTTONS = 8
+
+    def _process_done(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        if not cmd.text:
+            return ProcessingResult(url=None, success=True, message="Usage: `/done <a few words from the todo>`")
+        hits = [(code, text) for code in todos.TRACKERS
+                for text in todos.open_items(self.vault_writer.read_tracker(code)) if todos.matches(cmd.text, text)]
+        if not hits:
+            return ProcessingResult(url=None, success=True, message=f"No open todo matches \u201c{_md(cmd.text)}\u201d")
+        if len(hits) == 1:
+            return ProcessingResult(url=None, success=True, message=self._tick(*hits[0]))
+        rows = [[{"text": f"{text[:48]} · {todos.NAMES[code]}", "callback_data": f"dn:{code}{todos.key(text)}"}]
+                for code, text in hits[: self.DONE_MAX_BUTTONS]]
+        more = f" (showing {self.DONE_MAX_BUTTONS} — add a word to narrow it)" if len(hits) > self.DONE_MAX_BUTTONS else ""
+        self._send_card_and_wait(message.chat_id, f"{len(hits)} todos match. Which one?{more}", rows)
+        return ProcessingResult(url=None, success=True)
+
+    def _tick(self, code: str, text: str) -> str:
+        from datetime import date
+        ticked = self.vault_writer.edit_tracker(code, lambda c: todos.tick(c, todos.key(text), date.today()))
+        return f"\u2705 Done: {_show(ticked)} _({todos.NAMES[code]})_" if ticked else "That todo is already gone."
+
+    def _process_week(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        from datetime import date
+        monday = todos.target_monday(date.today())
+        items = todos.week_items(self.vault_writer.read_tracker("w"), monday)
+        if not items:
+            return ProcessingResult(url=None, success=True,
+                                    message=f"Nothing in This Week for {monday:%-d %b} yet. `/triage` to fill it.")
+        lines = "\n".join(f"{i}. {_show(t)}" for i, t in enumerate(items, 1))
+        return ProcessingResult(url=None, success=True,
+                                message=f"*This Week* ({monday:%-d %b}) — {len(items)}/{todos.WEEK_MAX}\n{lines}")
+
+    def _process_triage(self, cmd: ParsedCommand, message: TelegramMessage) -> ProcessingResult:
+        self._start_triage(message.chat_id)
+        return ProcessingResult(url=None, success=True)
+
+    def _triage_queue(self) -> list[tuple[str, str]]:
+        """Last week's unfinished items first (they need a decision, not silent carry-over), then Inbox."""
+        from datetime import date
+        monday = todos.target_monday(date.today())
+        return ([("w", t) for t in todos.stale_week_items(self.vault_writer.read_tracker("w"), monday)]
+                + [("i", t) for t in todos.open_items(self.vault_writer.read_tracker("i"))])
+
+    def _triage_card(self, pos: int, deadline_menu: bool = False):
+        """(text, keyboard) for the item at pos, or None when the queue is done."""
+        from datetime import date
+        queue = self._triage_queue()
+        if pos >= len(queue):
+            return None
+        code, text = queue[pos]
+        week_n = len(todos.week_items(self.vault_writer.read_tracker("w"), todos.target_monday(date.today())))
+        full = " (full)" if week_n >= todos.WEEK_MAX else ""
+        body = (f"*Triage* {pos + 1}/{len(queue)} · This Week {week_n}/{todos.WEEK_MAX}{full}\n\n"
+                f"{_show(text)}\n_from {todos.NAMES[code]}_")
+        tail = f"{pos}:{code}{todos.key(text)}"
+        b = lambda label, act: {"text": label, "callback_data": f"tg:{act}:{tail}"}
+        if deadline_menu:
+            dates = [b(label, f"d{d:%Y%m%d}") for label, d in todos.deadline_choices(date.today())]
+            return body + "\n\nDue when?", [dates[:2], dates[2:], [b("\u2190 Back", "b")]]
+        return body, [[b("\U0001f4c5 This week", "w"), b("\U0001f5d3 Deadline", "D"), b("\U0001f4a4 Someday", "s")],
+                      [b("\u2705 Done", "x"), b("\U0001f5d1 Delete", "r"), b("\u23ed Skip", "k")]]
+
+    def _start_triage(self, chat_id: int) -> None:
+        card = self._triage_card(0)
+        if not card:
+            self.telegram.send_notification(chat_id, "Nothing to triage: Inbox is empty and last week is clear.")
+            return
+        self._send_card_and_wait(chat_id, *card)
+
+    def _send_card_and_wait(self, chat_id: int, text: str, keyboard) -> None:
+        message_id = self.telegram.send_buttons(chat_id, text, keyboard)
+        if message_id is None:
+            return
+        for data in self.telegram.wait_for_callback(chat_id, message_id, self.TAP_WAIT_S):
+            if self._handle_todo_tap(chat_id, message_id, data):
+                break
+
+    def _handle_todo_tap(self, chat_id: int, message_id: int, data: str) -> bool:
+        """Apply one tap and redraw its card. True when that card is finished."""
+        from datetime import date, datetime
+        if data.startswith("dn:"):
+            code, k = data[3], data[4:]
+            text = next((t for t in todos.open_items(self.vault_writer.read_tracker(code)) if todos.key(t) == k), None)
+            self.telegram.edit_message(chat_id, message_id, self._tick(code, text) if text else "That todo is already gone.")
+            return True
+        if not data.startswith("tg:"):
+            return False
+        try:
+            _, act, pos, ck = data.split(":", 3)
+            pos, code, k = int(pos), ck[0], ck[1:]
+        except ValueError:
+            return False
+        if act == "D":
+            card = self._triage_card(pos, deadline_menu=True)
+        else:
+            if act in ("k", "b"):
+                pos += act == "k"
+            else:
+                moved = self.vault_writer.edit_tracker(code, lambda c: todos.remove(c, k)) if act != "x" else \
+                    self.vault_writer.edit_tracker(code, lambda c: todos.tick(c, k, date.today()))
+                if moved and act == "w":
+                    monday = todos.target_monday(date.today())
+                    self.vault_writer.edit_tracker("w", lambda c: (todos.add_to_week(c, moved, monday), None))
+                elif moved and act == "s":
+                    self.vault_writer.edit_tracker("s", lambda c: (todos.add_someday(c, moved), None))
+                elif moved and act.startswith("d"):
+                    self.vault_writer.append_to_deadlines(moved, datetime.strptime(act[1:], "%Y%m%d").date())
+            card = self._triage_card(pos)
+        if not card:
+            monday = todos.target_monday(date.today())
+            n = len(todos.week_items(self.vault_writer.read_tracker("w"), monday))
+            self.telegram.edit_message(chat_id, message_id,
+                                       f"Triage done. This Week has {n}/{todos.WEEK_MAX}. `/week` to see it.", [])
+            return True
+        self.telegram.edit_message(chat_id, message_id, *card)
+        return False
+
+    def _maybe_weekly_triage(self) -> None:
+        """Sunday from 18:00, or Monday if the laptop was off: start triage once for the coming week."""
+        from datetime import datetime
+        now = datetime.now()
+        if not ((now.weekday() == 6 and now.hour >= 18) or now.weekday() == 0):
+            return
+        week = todos.target_monday(now.date()).isoformat()
+        if self.telegram.get_flag("triage_week") == week or not self.config.telegram.allowed_chat_ids:
+            return
+        self.telegram.set_flag("triage_week", week)  # before sending: a crash must not re-send every 5 min
+        self._start_triage(self.config.telegram.allowed_chat_ids[0])
+
     # ── Main entry points ──────────────────────────────────────────────────────
 
     _HANDLERS = {
         "help": "_process_help",
         "search": "_process_search",
         "status": "_process_status",
+        "done": "_process_done",
+        "week": "_process_week",
+        "triage": "_process_triage",
         "url": "_process_url",
         "todo_inbox": "_process_todo_inbox",
         "todo_deadline": "_process_todo_deadline",
@@ -1041,6 +1182,10 @@ class Processor:
 
     def process_message(self, message: TelegramMessage) -> ProcessingResult:
         """Route a Telegram message to the correct handler."""
+        if message.callback_data is not None:
+            # A button tapped after its run stopped waiting. Buttons carry their whole action.
+            self._handle_todo_tap(message.chat_id, message.message_id, message.callback_data)
+            return ProcessingResult(url=None, success=True)
         if message.image_file_id:
             logger.info("Routing image → screenshot")
             result = self._process_screenshot(message)
@@ -1099,6 +1244,10 @@ class Processor:
         """Fetch pending Telegram messages and process them."""
         logger.info("Fetching pending messages from Telegram")
         messages = self.telegram.get_pending_messages()
+        try:
+            self._maybe_weekly_triage()
+        except Exception:
+            logger.exception("Weekly triage failed")  # never let it block message processing
 
         if not messages:
             logger.info("No pending messages to process")
@@ -1125,6 +1274,12 @@ class Processor:
 
 # A failed message is retried on later runs up to this many tries in total, then dropped.
 MAX_ATTEMPTS = 3
+
+
+def _show(text: str, limit: int = 300) -> str:
+    """A todo for a Telegram card: vault bold/code marks dropped (they'd show as literal *), clipped."""
+    text = re.sub(r"\*\*|`", "", text or "")
+    return _md(text if len(text) <= limit else text[: limit - 1] + "\u2026")
 
 
 def _md(text: str) -> str:

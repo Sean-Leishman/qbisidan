@@ -5,6 +5,8 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from .. import todos
+
 logger = logging.getLogger(__name__)
 
 _ORDINAL_SUFFIXES = {1: "st", 2: "nd", 3: "rd", 21: "st", 22: "nd", 23: "rd", 31: "st"}
@@ -92,11 +94,27 @@ cssclasses:
         )
 
     def append_to_deadlines(self, text: str, due_date: date) -> None:
-        """Append to 08 Trackers/Deadlines.md — tasks with a specific due date."""
-        self._append_to_tracker(
-            "08 Trackers/Deadlines.md",
-            f"- [ ] {text} | {due_date.isoformat()}",
-        )
+        """Insert into 08 Trackers/Deadlines.md as "YYYY-MM-DD — text", in date order."""
+        if not (self.vault_path / todos.TRACKERS["d"]).exists():
+            self._append_to_tracker(todos.TRACKERS["d"], f"- [ ] {due_date.isoformat()} — {text}")
+            return
+        self.edit_tracker("d", lambda c: (todos.add_deadline(c, text, due_date), None))
+
+    def read_tracker(self, code: str) -> str:
+        """Contents of a todo tracker (see todos.TRACKERS), "" if it doesn't exist yet."""
+        path = self.vault_path / todos.TRACKERS[code]
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def edit_tracker(self, code: str, change):
+        """change(content) -> (new content, result). Writes only if something changed."""
+        path = self.vault_path / todos.TRACKERS[code]
+        content = self.read_tracker(code)
+        new, result = change(content)
+        if new != content:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(new, encoding="utf-8")
+            logger.info(f"Updated tracker {todos.TRACKERS[code]}")
+        return result
 
     def append_to_someday(self, text: str) -> None:
         """Append to 08 Trackers/Someday.md — no-urgency parking lot."""

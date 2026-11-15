@@ -21,6 +21,7 @@ class TelegramMessage:
     image_file_id: str | None = None  # a photo, or an image sent as a file
     image_mime: str | None = None
     attempts: int = 0  # failed processing runs so far; see requeue()
+    callback_data: str | None = None  # a button tap (message_id is the message the button is on)
     # Legacy fields kept for backward compatibility
     url: str | None = None
     user_notes: str | None = None
@@ -171,9 +172,12 @@ class TelegramQueue:
         for update in updates:
             self.last_update_id = update["update_id"]
 
-            # callback_query updates (inline button taps) are handled by
-            # wait_for_callback, not the regular message flow.
+            # A button tap nobody is waiting on (e.g. a todo button tapped after the run that
+            # sent it ended): handled like a message. Buttons carry their whole action.
             if "callback_query" in update:
+                tap = self._parse_callback(update)
+                if tap:
+                    messages.append(tap)
                 continue
 
             msg = self._parse_message_update(update)
@@ -209,6 +213,25 @@ class TelegramQueue:
         chat = (first_update.get("message") or {}).get("chat", {}).get("id")
         for chat_id in [chat] if chat in self.allowed_chat_ids else self.allowed_chat_ids[:1]:
             self.send_notification(chat_id, text)
+
+    def _parse_callback(self, update: dict) -> "TelegramMessage | None":
+        cq = update["callback_query"]
+        self.answer_callback_query(cq["id"])
+        msg = cq.get("message") or {}
+        chat_id = msg.get("chat", {}).get("id")
+        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
+            return None
+        return TelegramMessage(update_id=update["update_id"], message_id=msg.get("message_id", 0),
+                               chat_id=chat_id, text="", date=msg.get("date", 0),
+                               callback_data=cq.get("data", ""))
+
+    def get_flag(self, name: str):
+        return self._load_state().get(name)
+
+    def set_flag(self, name: str, value) -> None:
+        state = self._load_state()
+        state[name] = value
+        self._save_state(state)
 
     # Keep old method as alias for backward compatibility
     def get_pending_urls(self) -> list[TelegramMessage]:
@@ -279,19 +302,14 @@ class TelegramQueue:
             print(f"Error sending Telegram message: {self._err(e)}")
             return None
 
-    def edit_message(self, chat_id: int, message_id: int, text: str) -> bool:
-        """Edit an existing bot message in-place (used for progress bars)."""
+    def edit_message(self, chat_id: int, message_id: int, text: str,
+                     keyboard: list[list[dict]] | None = None) -> bool:
+        """Edit an existing bot message in-place (progress bars; todo cards, with their buttons)."""
+        body = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"}
+        if keyboard is not None:
+            body["reply_markup"] = {"inline_keyboard": keyboard}
         try:
-            response = requests.post(
-                f"{self.base_url}/editMessageText",
-                json={
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                },
-                timeout=10,
-            )
+            response = requests.post(f"{self.base_url}/editMessageText", json=body, timeout=10)
             # Telegram rejects edits with identical content; treat that as success.
             if response.status_code == 400 and "not modified" in response.text.lower():
                 return True
@@ -403,9 +421,11 @@ class TelegramQueue:
                 self.last_update_id = update["update_id"]
                 cq = update.get("callback_query")
                 if cq:
-                    self.answer_callback_query(cq["id"])
                     if cq.get("message", {}).get("message_id") == message_id:
+                        self.answer_callback_query(cq["id"])
                         callbacks.append(cq.get("data", ""))
+                    elif tap := self._parse_callback(update):
+                        self._buffer_message(tap)  # a tap on another message: next run handles it
                     continue
                 buffered = self._parse_message_update(update)
                 if buffered:

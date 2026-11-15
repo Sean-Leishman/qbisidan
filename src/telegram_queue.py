@@ -166,6 +166,8 @@ class TelegramQueue:
             print(f"Error fetching Telegram updates: {self._err(e)}")
             return messages
 
+        if updates:
+            self._report_missed(updates[0])
         for update in updates:
             self.last_update_id = update["update_id"]
 
@@ -181,6 +183,32 @@ class TelegramQueue:
         # Save state after processing
         self._save_last_update_id()
         return messages
+
+    # Update ids rise by one per update, so a jump past our saved position means Telegram
+    # dropped updates it held over 24 h (laptop off). The content is gone for the bot, but
+    # still in your chat: the missed ones are your messages with no bot reply after them.
+    # After a week with no updates at all Telegram picks the next id at random, so past
+    # that a jump says nothing exact.
+    WEEK_S = 7 * 24 * 3600
+
+    def _report_missed(self, first_update: dict) -> None:
+        state = self._load_state()
+        last_seen = state.get("last_update_at")
+        state["last_update_at"] = time.time()
+        self._save_state(state)
+        missed = first_update["update_id"] - self.last_update_id - 1
+        if not self.last_update_id or missed <= 0:
+            return
+        if last_seen and time.time() - last_seen < self.WEEK_S:
+            what = f"{missed} message{'s' if missed != 1 else ''}"
+        else:
+            what = "some messages (the count is unknowable after a week offline)"
+        text = (f"\u26a0\ufe0f Missed {what} while switched off: Telegram only holds them for 24 h.\n"
+                "Scroll up for your messages with no reply from me after them, and resend those.")
+        print(f"Missed updates detected: {what}")
+        chat = (first_update.get("message") or {}).get("chat", {}).get("id")
+        for chat_id in [chat] if chat in self.allowed_chat_ids else self.allowed_chat_ids[:1]:
+            self.send_notification(chat_id, text)
 
     # Keep old method as alias for backward compatibility
     def get_pending_urls(self) -> list[TelegramMessage]:

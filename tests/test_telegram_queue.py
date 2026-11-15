@@ -277,3 +277,44 @@ class TestErrorRedaction:
         e = requests.HTTPError("400 for url: https://api.telegram.org/bot123:SECRET/sendMessage", response=resp)
         msg = q._err(e)
         assert "SECRET" not in msg and "<token>" in msg and "parse entities" in msg
+
+
+class TestMissedUpdates:
+    @staticmethod
+    def _fetch(queue, first_id, n=1):
+        updates = [{"update_id": first_id + i,
+                    "message": {"message_id": i, "chat": {"id": 123}, "text": "hi", "date": 0}}
+                   for i in range(n)]
+        resp = MagicMock(json=lambda: {"result": updates})
+        with patch("src.telegram_queue.requests.get", return_value=resp), \
+             patch.object(queue, "send_notification") as notify:
+            msgs = queue.get_pending_messages()
+        return msgs, notify
+
+    def _seen(self, queue, update_id, ago_s):
+        import time
+        queue.last_update_id = update_id
+        state = queue._load_state()
+        state["last_update_at"] = time.time() - ago_s
+        queue._save_state(state)
+
+    def test_gap_reports_exact_count_and_still_delivers_new_messages(self, queue):
+        self._seen(queue, 100, ago_s=3 * 86400)
+        msgs, notify = self._fetch(queue, first_id=104)
+        assert len(msgs) == 1
+        notify.assert_called_once()
+        assert notify.call_args.args[0] == 123 and "Missed 3 messages" in notify.call_args.args[1]
+
+    def test_no_gap_no_report(self, queue):
+        self._seen(queue, 100, ago_s=3 * 86400)
+        _, notify = self._fetch(queue, first_id=101, n=2)
+        notify.assert_not_called()
+
+    def test_after_a_week_ids_are_random_so_no_count(self, queue):
+        self._seen(queue, 100, ago_s=8 * 86400)
+        _, notify = self._fetch(queue, first_id=5_000_000)
+        assert "unknowable" in notify.call_args.args[1]
+
+    def test_first_ever_run_is_not_a_gap(self, queue):
+        _, notify = self._fetch(queue, first_id=5_000_000)
+        notify.assert_not_called()

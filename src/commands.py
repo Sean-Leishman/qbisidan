@@ -23,6 +23,7 @@ class ParsedCommand:
     crawl_to: date | None = None
     crawl_topic: str | None = None
     backfill_kind: str | None = None  # "saved" | "likes" for /backfill instagram ...
+    model: str | None = None  # /ai claude: ... — which assistant wrote the pasted answer
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"{}|\\^`\[\]]+")
@@ -182,6 +183,7 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         event           — /event             → ICS + daily note
         channel_crawl   — /crawl <url> ...   → batch-bookmark a channel's videos
         backfill        — /backfill ...      → batch-ingest a saved history, filtered by interests
+        ai              — /ai [model:] <text> → 02 Sources/AI/<auto-title>.md, verbatim
         inbox           — plain text default → 08 Trackers/Inbox.md
     """
     text = text.strip()
@@ -206,6 +208,15 @@ def parse_message(text: str, reply_to_text: str | None = None) -> ParsedCommand:
         return ParsedCommand(command_type="week", text="")
     if re.match(r"/triage\b", text, re.IGNORECASE):
         return ParsedCommand(command_type="triage", text="")
+
+    # /ai [claude:|chatgpt:|...] <pasted answer> — ahead of the reply and URL checks: pasted
+    # answers are full of links, and the whole paste is the content.
+    if re.match(r"/ai\b", text, re.IGNORECASE):
+        body = text[3:].strip()
+        label = re.match(r"(claude|chatgpt|gpt|gemini|perplexity):\s*", body, re.IGNORECASE)
+        if label:
+            return ParsedCommand(command_type="ai", text=body[label.end():], model=label.group(1).lower())
+        return ParsedCommand(command_type="ai", text=body)
 
     # Reply to bot message → question about that content
     reply_title = _extract_reply_title(reply_to_text)

@@ -20,6 +20,8 @@ class TelegramMessage:
     reply_to_text: str | None = None  # Text of the message being replied to
     image_file_id: str | None = None  # a photo, or an image sent as a file
     image_mime: str | None = None
+    audio_file_id: str | None = None  # a voice note, or an audio file
+    audio_mime: str | None = None
     attempts: int = 0  # failed processing runs so far; see requeue()
     callback_data: str | None = None  # a button tap (message_id is the message the button is on)
     # Legacy fields kept for backward compatibility
@@ -127,8 +129,15 @@ class TelegramQueue:
         if not image_file_id and str(document.get("mime_type", "")).startswith("image/"):
             image_file_id, image_mime = document["file_id"], document["mime_type"]
 
+        # Voice notes had the same bug as photos: no `text`, so dropped without a reply.
+        audio_file_id = audio_mime = None
+        if msg.get("voice"):
+            audio_file_id, audio_mime = msg["voice"]["file_id"], "audio/ogg"
+        elif msg.get("audio"):
+            audio_file_id, audio_mime = msg["audio"]["file_id"], msg["audio"].get("mime_type") or "audio/mpeg"
+
         text = msg.get("text") or msg.get("caption") or ""
-        if not text.strip() and not image_file_id:
+        if not text.strip() and not image_file_id and not audio_file_id:
             return None
 
         reply_to_text = None
@@ -145,6 +154,8 @@ class TelegramQueue:
             reply_to_text=reply_to_text,
             image_file_id=image_file_id,
             image_mime=image_mime,
+            audio_file_id=audio_file_id,
+            audio_mime=audio_mime,
         )
 
     def get_pending_messages(self) -> list[TelegramMessage]:

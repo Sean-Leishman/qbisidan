@@ -150,7 +150,9 @@ class Processor:
         "`/week` — This Week\n"
         "`/triage` — sort Inbox (also every Sunday 18:00)\n"
         "`/note <text>` — new Fleeting Note\n"
-        "`/note <url>` — raw link, no AI\n\n"
+        "`/note <url>` — raw link, no AI\n"
+        "`/ai [claude:|chatgpt:] <pasted answer>` — 02 Sources/AI (one message, max 4096 chars)\n"
+        "_voice note_ — transcribed, then like text (start with \"todo\" for Inbox)\n\n"
         "*Lists*\n"
         "`/read <title or url>` — To Be Read\n"
         "`/watch <title or url>` — To Be Watched\n\n"
@@ -1172,6 +1174,7 @@ class Processor:
         "backfill": "_process_backfill",
         "question": "_process_question",
         "inbox": "_process_inbox",
+        "ai": "_process_ai",
     }
 
     def process_url(self, url: str, user_notes: str | None = None) -> ProcessingResult:
@@ -1189,6 +1192,9 @@ class Processor:
         if message.image_file_id:
             logger.info("Routing image → screenshot")
             result = self._process_screenshot(message)
+        elif message.audio_file_id:
+            logger.info("Routing audio → voice")
+            result = self._process_voice(message)
         else:
             cmd = parse_message(message.text, message.reply_to_text)
             logger.info(f"Routing '{message.text[:60]}' → {cmd.command_type}")
@@ -1239,6 +1245,44 @@ class Processor:
                                           model=self.config.ai.model, max_tokens=2048)
         place = classify([item], classifier, Path(".cache/places"))[0]
         return ProcessingResult(url=None, success=True, message=_screenshot_reply(place, LOCAL))
+
+    def _process_voice(self, message: TelegramMessage) -> ProcessingResult:
+        """A voice note: transcribe it, then handle it as if typed. A spoken leading "todo"
+        means /todo; anything else is plain text. Lines are marked 🎙 so they read as spoken."""
+        from .scrapers.voice import VoiceTranscriber
+
+        try:
+            audio = self.telegram.download_file(message.audio_file_id)
+            transcript = VoiceTranscriber(self.config.ai.gemini_api_key, self.config.ai.gemini_model).transcribe(
+                audio, message.audio_mime)
+        except Exception as e:  # file_ids stay valid, so the retry queue can try again
+            return ProcessingResult(url=None, success=False, error=f"couldn't transcribe the voice note: {e}")
+        transcript = " ".join(transcript.split())  # one daily-note line, whatever Gemini's line breaks
+        if not transcript:
+            return ProcessingResult(url=None, success=False, error="no speech in that voice note")
+
+        todo = re.match(r"to[\s-]?do\b[\s.,:;!-]*(\S.*)", transcript, re.IGNORECASE)
+        if todo:
+            cmd = parse_message(f"/todo 🎙 {todo.group(1)}")
+        else:
+            cmd = parse_message(f"🎙 {transcript}", message.reply_to_text)
+        result = getattr(self, self._HANDLERS.get(cmd.command_type, "_process_inbox"))(cmd, message)
+        if result.success and not result.title:
+            clip = transcript if len(transcript) <= 3500 else transcript[:3499] + "…"
+            result.message = f"🎙 {'Todo' if todo else 'Logged'}: {_md(clip)}"
+        return result
+
+    def _process_ai(self, cmd: ParsedCommand, _: TelegramMessage) -> ProcessingResult:
+        """/ai [model:] <pasted answer> → 02 Sources/AI/<auto-title>.md, verbatim, as reference."""
+        if not cmd.text:
+            return ProcessingResult(url=None, success=True, message="Usage: `/ai [claude:] <pasted answer>`")
+        try:
+            path = self.vault_writer.create_ai_output_note(cmd.text, cmd.model)
+            self.telegram.log_activity("ai")
+            return ProcessingResult(url=None, success=True, message=f"Saved AI output: {_md(path.stem)}")
+        except Exception as e:
+            logger.exception("Error saving AI output")
+            return ProcessingResult(url=None, success=False, error=str(e))
 
     def run(self) -> list[ProcessingResult]:
         """Fetch pending Telegram messages and process them."""

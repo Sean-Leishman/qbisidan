@@ -179,6 +179,35 @@ cssclasses:
         logger.info(f"Created fleeting note: {path}")
         return path
 
+    def create_ai_output_note(self, text: str, model: str | None = None) -> Path:
+        """Save a pasted ChatGPT/Claude answer to 02 Sources/AI/ as reference material, verbatim.
+        A source, not a Base Note: what a model said is evidence to weigh, not settled knowledge."""
+        # Title from the first line only (a heading, usually), without its "#"/"**"/"-" marks.
+        first_line = re.sub(r"^[\s#>*`_-]+", "", text).split("\n", 1)[0]
+        title = _sanitize_filename(_auto_title(first_line)) or "AI output"
+        folder = self.vault_path / "02 Sources" / "AI"
+        path = folder / f"{title}.md"
+        counter = 1
+        while path.exists():
+            path = folder / f"{title} ({counter}).md"
+            counter += 1
+
+        model_line = f"model: {model}\n" if model else ""
+        content = f"""---
+title: "{title}"
+type: ai-output
+created: {datetime.now().strftime("%Y-%m-%dT%H-%M")}
+{model_line}tags:
+  - ai-output
+---
+
+{text}
+"""
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        logger.info(f"Saved AI output: {path}")
+        return path
+
     # ── Daily note ─────────────────────────────────────────────────────────────
 
     def _daily_note_path(self, target_date: date | None = None) -> Path:

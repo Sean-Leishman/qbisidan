@@ -277,15 +277,21 @@ class TestResults:
         assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 24))}
         assert item.key in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 25))}
 
-    def test_sure_comes_back_once_at_plus_10_then_retires_for_good(self):
+    def test_sure_ladder_plus_10_then_plus_30_then_gone(self):
         item, lessons, _ = self.round_trip(redrill.SURE)
         assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 11, 24))}
         back = [it for it in redrill.collect(lessons, QUIZ, date(2026, 11, 25)) if it.key == item.key]
-        assert [(it.due, it.check) for it in back] == [(date(2026, 11, 25), True)]
+        assert [(it.due, it.check) for it in back] == [(date(2026, 11, 25), 1)]
         day = date(2026, 11, 25)
         lessons += [(redrill.note_name(day), redrill.add_result("", back[0], redrill.SURE, day))]
-        assert " — back " not in lessons[-1][1].split("## Retired")[1]  # second Sure: final
-        assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2027, 1, 1))}
+        assert " — back 2026-12-25" in lessons[-1][1].split("## Retired")[1]  # second Sure: the +30 check
+        assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2026, 12, 24))}
+        last = [it for it in redrill.collect(lessons, QUIZ, date(2026, 12, 25)) if it.key == item.key]
+        assert [(it.due, it.check) for it in last] == [(date(2026, 12, 25), 2)]
+        day = date(2026, 12, 25)
+        lessons += [(redrill.note_name(day), redrill.add_result("", last[0], redrill.SURE, day))]
+        assert " — back " not in lessons[-1][1].split("## Retired")[1]  # third Sure: final
+        assert item.key not in {it.key for it in redrill.collect(lessons, QUIZ, date(2027, 6, 1))}
 
     def test_miss_on_the_check_returns_to_the_gap_cycle(self):
         item, lessons, _ = self.round_trip(redrill.SURE)
@@ -310,8 +316,8 @@ class FakeAgent:
     def __init__(self, fail=False):
         self.calls, self.fail = [], fail
 
-    def make(self, text, misses=1, prior=None):
-        self.calls.append((text, misses, list(prior or [])))
+    def make(self, text, misses=1, prior=None, kind=None):
+        self.calls.append((text, misses, list(prior or []), kind))
         if self.fail:
             raise RuntimeError("offline")
         return {"question": f"Q{misses} about {text[:10]}?", "answer": f"A: {text[:10]}"}
@@ -335,7 +341,7 @@ class TestQuestions:
         agent = FakeAgent()
         first = redrill.cached_qa(Item("SSO limit — 15 chars", None, "t"), agent, tmp_path)
         second = redrill.cached_qa(Item("SSO limit (2nd miss) — 15 chars", None, "t", misses=2), agent, tmp_path)
-        assert first != second and agent.calls[1][1:] == (2, [first["question"]])
+        assert first != second and agent.calls[1][1:] == (2, [first["question"]], None)
         # both stay cached under their own miss count
         assert redrill.cached_qa(Item("SSO limit — 15 chars", None, "t", misses=2), agent, tmp_path) == second
         assert len(agent.calls) == 2
@@ -360,6 +366,20 @@ class TestQuestions:
         assert "THIRD" in seen[0] and "earlier?" in seen[0] and "NEVER name" in seen[0]
         agent.make("miss — fix")
         assert "recall question" in seen[1] and "earlier question" not in seen[1]
+
+    def test_miss_kind_overrides_the_ladder(self, tmp_path):
+        item = Item("TLB reach arithmetic (cue) — reach = entries × page size", None, "t")
+        assert item.kind == "cue" and redrill.head(item.text) == "tlb reach arithmetic"
+        agent = FakeAgent()
+        redrill.cached_qa(item, agent, tmp_path)
+        assert agent.calls[0][3] == "cue"
+        rq = RedrillQuestionAgent.__new__(RedrillQuestionAgent)
+        seen = []
+        rq._call = lambda prompt: seen.append(prompt) or '{"question": "Q", "answer": "A"}'
+        rq.make("x (structural) — y", 1, None, "structural")
+        rq.make("x (cue) — y", 1, None, "cue")
+        rq.make("x (slip) — y", 3, None, "slip")
+        assert "STRUCTURAL" in seen[0] and "SECOND miss" in seen[1] and "recall question" in seen[2]
 
     def test_agent_parses_json_and_grounds_prompt(self):
         agent = RedrillQuestionAgent.__new__(RedrillQuestionAgent)
@@ -463,7 +483,8 @@ class TestDrillFlow:
         card = tg.edits[-1]
         assert "*Answer:*" in card[0]
         p.process_message(self.msg(data=tap(card, "Sure")))
-        assert tg.edits[-1] == ("_Retired_\n\nRe-drill done: 1 missed, 0 unsure, 1 retired.", [])
+        text, kb = tg.edits[-1]
+        assert text.startswith("_Retired, check ") and text.endswith("_\n\nRe-drill done: 1 missed, 0 unsure, 1 retired.") and kb == []
         assert "## Retired\n- `-lutil main.o` links" in self.results(p)
         assert p.redrill_agent.calls and len(p.redrill_agent.calls) == 2  # one call per item
 

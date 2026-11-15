@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from . import redrill
+
 DIGESTS_FOLDER = "04 Indexes/Digests"
 SOURCES_FOLDER = "02 Sources"
 BASE_NOTES_FOLDER = "05 Base Notes"
@@ -60,6 +62,7 @@ class DigestInputs:
     sources: list[Note] = field(default_factory=list)
     weeklies: list[Note] = field(default_factory=list)   # monthly only
     facts: list[Note] = field(default_factory=list)      # tag: personal Base Notes
+    learning: list[str] = field(default_factory=list)    # counted from lesson notes, never drafted
 
     def is_empty(self) -> bool:
         """Nothing to digest. Personal facts alone are not evidence of anything this period."""
@@ -228,6 +231,54 @@ def gather_personal_facts(vault: Path) -> list[Note]:
     return out
 
 
+def _section_lines(content: str, heading: str) -> list[str]:
+    """`- ` items under `## <heading>` in a lesson note, through the md-log hook's `> ` quoting."""
+    out, inside = [], False
+    for raw in content.splitlines():
+        line = re.sub(r"^\s*(?:>\s?)*", "", raw).rstrip()
+        if re.fullmatch(rf"##\s+{heading}", line):
+            inside = True
+        elif inside and line.startswith("- "):
+            out.append(line[2:].strip())
+        else:
+            inside = False
+    return out
+
+
+def gather_learning(vault: Path, start: date, end: date) -> list[str]:
+    """The period's learning, counted rather than drafted (no LLM): each lesson's `## Session`
+    line, each phone re-drill's tally, and the summed `## Calibration` fractions (teach skill,
+    Close). Lesson notes are dated by filename or `created:`."""
+    out, hi, lo = [], [0, 0], [0, 0]
+    folder = Path(vault) / redrill.LESSONS
+    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        when = redrill.lesson_date(path.name, content)
+        if when is None or not start <= when <= end:
+            continue
+        link = f"[[{path.stem}]]"
+        if redrill.PHONE in path.name:
+            m, u, r = redrill.tally(content, when)
+            if m + u + r:
+                out.append(f"Phone re-drill {when.isoformat()}: {m} missed · {u} unsure · {r} retired {link}")
+            continue
+        out += [f"{line} {link}" for line in _section_lines(content, "Session")]
+        for line in _section_lines(content, "Calibration"):
+            fr = re.findall(r"(\d+)/(\d+)", line)[:2]
+            for band, (a, b) in zip((hi, lo), fr):
+                band[0] += int(a)
+                band[1] += int(b)
+    if hi[1] or lo[1]:
+        text = f"Calibration: conf 3–4 right {hi[0]}/{hi[1]} · conf 1–2 right {lo[0]}/{lo[1]}"
+        if hi[1] - hi[0]:
+            text += f" → {hi[1] - hi[0]} confident {'miss' if hi[1] - hi[0] == 1 else 'misses'}"
+        out.append(text)
+    return out
+
+
 def gather_week(vault: Path, monday: date, daily_folder: str = "06 Daily Notes",
                 until: date | None = None) -> DigestInputs:
     """Inputs for the ISO week starting monday, optionally cut off at `until` (an on-demand mid-week run)."""
@@ -237,7 +288,8 @@ def gather_week(vault: Path, monday: date, daily_folder: str = "06 Daily Notes",
     vault = Path(vault)
     inputs = DigestInputs(week_label(monday), "weekly", monday, end,
                           daily=gather_daily(vault, monday, end, daily_folder),
-                          sources=gather_sources(vault, monday, end))
+                          sources=gather_sources(vault, monday, end),
+                          learning=gather_learning(vault, monday, end))
     if not inputs.is_empty():  # facts only matter when there is something to compare them to
         inputs.facts = gather_personal_facts(vault)
     return inputs
@@ -255,7 +307,8 @@ def gather_month(vault: Path, year: int, month: int) -> DigestInputs:
             weeklies.append(Note(path.stem, _clip(body.strip(), _WEEKLY_CLIP)))
     start = mondays[0] if mondays else date(year, month, 1)
     end = mondays[-1] + timedelta(days=6) if mondays else start
-    inputs = DigestInputs(month_label(year, month), "monthly", start, end, weeklies=weeklies)
+    inputs = DigestInputs(month_label(year, month), "monthly", start, end, weeklies=weeklies,
+                          learning=gather_learning(vault, start, end))
     if not inputs.is_empty():
         inputs.facts = gather_personal_facts(vault)
     return inputs
@@ -361,6 +414,8 @@ def render(inputs: DigestInputs, sections: dict, dropped: int = 0, prior: str | 
         items = sections.get(key) or []
         lines = "\n".join(f"- {i}" for i in items) if items else f"- none this {unit}"
         body.append(f"## {heading}\n*{guide}*\n\n{lines}\n")
+    learn = "\n".join(f"- {i}" for i in inputs.learning) if inputs.learning else f"- none this {unit}"
+    body.append(f"## Learning\n*Lessons, re-drills and calibration this {unit}. Counted from the lesson notes, not drafted.*\n\n{learn}\n")
     links = lambda notes: ", ".join(f"[[{n.name}]]" for n in notes)
     log = []
     if inputs.weeklies:

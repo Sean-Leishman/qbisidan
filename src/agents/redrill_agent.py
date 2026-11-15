@@ -43,11 +43,17 @@ Answer with ONLY a JSON object: {{"question": "...", "answer": "..."}}"""
            "the correct version and a tempting near-alternative (the misconception in the line, if "
            "it names one) would lead to different outcomes. Ask which applies and why. NEVER name the "
            "idea in the question. Then the answer.",
+        4: "The line marks this as a STRUCTURAL miss: the idea was never understood, so recall won't "
+           "help. Write ONE question that asks WHY the correct version must hold, or asks them to derive "
+           "it from the facts in the line. Then the answer, as a short chain of reasoning.",
     }
+    # The skill's miss kind on the Gaps line overrides the miss-count ladder (SKILL.md, Close).
+    BY_KIND = {"cue": 2, "discrimination": 3, "structural": 4, "slip": 1, "careless": 1}
 
-    def make(self, text: str, misses: int = 1, prior: list[str] | None = None) -> dict | None:
+    def make(self, text: str, misses: int = 1, prior: list[str] | None = None,
+             kind: str | None = None) -> dict | None:
         """{"question", "answer"} or None when the reply can't be used."""
-        kind = self.KINDS[min(max(misses, 1), 3)]
+        kind = self.KINDS[self.BY_KIND.get(kind or "", min(max(misses, 1), 3))]
         avoid = ""
         if prior:
             avoid = "\n- It must differ in form and angle from every earlier question on this miss:\n" + \

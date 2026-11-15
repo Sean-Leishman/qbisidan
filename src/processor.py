@@ -1321,8 +1321,10 @@ class Processor:
         elif act == "g" and len(parts) == 4 and parts[3] in self._GRADE_NOTE:
             today = date.today()
             self.vault_writer.append_redrill_result(item, parts[3], today)
-            back = redrill.new_due(parts[3], today)
-            note = "_" + self._GRADE_NOTE[parts[3]].format(d=f"{back:%a %-d %b}" if back else "") + "_\n\n"
+            back = redrill.new_due(parts[3], today) or redrill.check_back(item, today)
+            label = self._GRADE_NOTE[parts[3]] if parts[3] != redrill.SURE else \
+                ("Retired, check {d}" if back else "Retired for good")
+            note = "_" + label.format(d=f"{back:%a %-d %b}" if back else "") + "_\n\n"
             card = self._drill_next(self._drill_due(), note=note)
         else:
             return False

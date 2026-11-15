@@ -69,7 +69,56 @@ def vault(tmp_path):
     return tmp_path
 
 
+LESSON = """---
+created: 2026-11-12
+tags: [lesson]
+summary:
+---
+#Inbox
+
+> [!abstract] CLAUDE
+> ## Session
+> - Virtual memory · lesson · nodes 5/6 · misses 3 · 48 min
+> ## Calibration
+> - conf 3–4: right 7/9 · conf 1–2: right 3/4 · don't know: 1
+> ## Gaps
+> - PTE vs page (structural) — a PTE is a pointer — due 2026-11-16
+"""
+
+PHONE_NOTE = """---
+created: 2026-11-14
+tags: [lesson]
+summary:
+---
+#Inbox
+
+## Gaps
+- SSO limit — 15 chars — due 2026-11-18
+- operator[] — inserts — due 2026-11-18
+## Retired
+- UB kinds — back 2026-11-24
+"""
+
+
 # ── Gathering ──────────────────────────────────────────────────────────────────
+
+class TestLearning:
+    def test_counts_sessions_phone_tallies_and_calibration(self, vault):
+        write(vault, "02 Sources/Lessons/2026-11-12 Virtual Memory.md", LESSON)
+        write(vault, "02 Sources/Lessons/2026-11-14 Re-drill (phone).md", PHONE_NOTE)
+        write(vault, "02 Sources/Lessons/2026-11-05 Old.md", LESSON.replace("2026-11-12", "2026-11-05"))
+        learning = digest.gather_week(vault, MON).learning
+        assert learning == [
+            "Virtual memory · lesson · nodes 5/6 · misses 3 · 48 min [[2026-11-12 Virtual Memory]]",
+            "Phone re-drill 2026-11-14: 2 missed · 0 unsure · 1 retired [[2026-11-14 Re-drill (phone)]]",
+            "Calibration: conf 3–4 right 7/9 · conf 1–2 right 3/4 → 2 confident misses",
+        ]
+        md = digest.render(digest.gather_week(vault, MON), {})
+        assert "## Learning" in md and "- Phone re-drill 2026-11-14" in md
+
+    def test_no_lessons_folder(self, vault):
+        assert digest.gather_week(vault, MON).learning == []
+
 
 class TestGather:
     def test_week_window_and_empty_template_notes(self, vault):
@@ -146,7 +195,7 @@ class TestPrompt:
         assert "type: digest" in md and "period: weekly" in md and "visibility: private" in md
         assert "created: 2026-11-15:18-05" in md
         assert "**Range:** 2026-11-09 → 2026-11-15" in md
-        assert md.count("- none this week") == 5
+        assert md.count("- none this week") == 6 and "## Learning" in md
         assert "- Daily Notes scanned: 1 — [[2026-11-15]]" in md
         assert "- Prior digest: [[2026-W45]]" in md and "Uncited items dropped: 1" in md
 

@@ -19,13 +19,13 @@ class BaseAgent:
         self.max_tokens = max_tokens
 
         if provider == "groq":
-            self.model = model or "llama-3.3-70b-versatile"
+            self.model = model or "openai/gpt-oss-120b"
             self._init_groq()
         elif provider == "gemini":
             self.model = model or "gemini-flash-latest"
             self._init_gemini()
         else:
-            self.model = model or "claude-sonnet-5"
+            self.model = model or "claude-sonnet-5-5"
             self._init_anthropic()
 
     def _init_groq(self):
@@ -94,7 +94,8 @@ class BaseAgent:
                 max_tokens=self.max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return message.content[0].text
+            # Current Claude models return thinking blocks before text; pick the text block.
+            return next(b.text for b in message.content if b.type == "text")
         except Exception as e:
             logger.error(f"Anthropic API error: {e}")
             raise

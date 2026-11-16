@@ -279,7 +279,7 @@ vault_writer:
 
 instagram:
   cookies_file: ""            # Netscape cookies.txt, for private/age-gated reels
-  video_model: "gemini-2.0-flash"   # must accept video input; always uses the Gemini key
+  video_model: "gemini-flash-latest"   # must accept video input; always uses the Gemini key
   max_duration_seconds: 180   # longer reels degrade to caption-only, not a huge Gemini bill
 
 routing_categories:           # AI routes articles to category subfolders

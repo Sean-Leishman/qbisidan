@@ -11,7 +11,7 @@ ai:
 
   # Groq (free tier - recommended)
   groq_api_key: "${GROQ_API_KEY}"
-  groq_model: "llama-3.3-70b-versatile"
+  groq_model: "openai/gpt-oss-120b"
 
   # Gemini (free tier)
   gemini_api_key: "${GEMINI_API_KEY}"
@@ -19,7 +19,7 @@ ai:
 
   # Anthropic (paid)
   anthropic_api_key: "${ANTHROPIC_API_KEY}"
-  anthropic_model: "claude-sonnet-5"
+  anthropic_model: "claude-sonnet-5-5"
 
   max_tokens: 8192
 

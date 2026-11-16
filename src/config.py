@@ -212,11 +212,11 @@ class Config:
             ai=AIConfig(
                 provider=data["ai"].get("provider", "groq"),
                 groq_api_key=data["ai"].get("groq_api_key", ""),
-                groq_model=data["ai"].get("groq_model", "llama-3.3-70b-versatile"),
+                groq_model=data["ai"].get("groq_model", "openai/gpt-oss-120b"),
                 gemini_api_key=data["ai"].get("gemini_api_key", ""),
                 gemini_model=data["ai"].get("gemini_model", "gemini-flash-latest"),
                 anthropic_api_key=data["ai"].get("anthropic_api_key", ""),
-                anthropic_model=data["ai"].get("anthropic_model", "claude-sonnet-5"),
+                anthropic_model=data["ai"].get("anthropic_model", "claude-sonnet-5-5"),
                 max_tokens=data["ai"].get("max_tokens", 1024),
             ),
             output_folders=OutputFoldersConfig(

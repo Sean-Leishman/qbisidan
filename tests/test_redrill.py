@@ -526,7 +526,8 @@ class TestNudge:
         p._maybe_redrill_nudge(datetime(2026, 11, 15, 18, 59))
         assert tg.notes == []
         p._maybe_redrill_nudge(datetime(2026, 11, 15, 19, 0))
-        assert tg.notes == ["2 re-drills due — /drill"] and tg.flags["redrill_nudge"] == "2026-11-15"
+        assert tg.notes == ["2 re-drills due — /drill\nNo Base Note yet: 2026-10-13 C++ Foundations (33 d)"]
+        assert tg.flags["redrill_nudge"] == "2026-11-15"
         p._maybe_redrill_nudge(datetime(2026, 11, 15, 21, 0))
         assert len(tg.notes) == 1
         p._maybe_redrill_nudge(datetime(2026, 11, 16, 19, 5))
@@ -536,3 +537,26 @@ class TestNudge:
         p = make(tmp_path, [], "")
         p._maybe_redrill_nudge(datetime(2026, 11, 15, 20, 0))
         assert p.telegram.notes == [] and "redrill_nudge" not in p.telegram.flags
+
+    def test_base_note_gate_alone_nudges_and_a_linking_note_silences_it(self, tmp_path):
+        p = make(tmp_path, SMALL, "")
+        p._maybe_redrill_nudge(datetime(2026, 12, 20, 19, 0))  # 68 d: too old to nag, drills still due
+        assert "Base Note" not in p.telegram.notes[-1]
+        p = make(tmp_path / "b", [("2026-11-10 Raft.md", "---\ncreated: 2026-11-10\ntags: [lesson]\n---\n#Inbox\nno gaps here\n")], "")
+        p._maybe_redrill_nudge(datetime(2026, 11, 15, 19, 0))
+        assert p.telegram.notes == ["No Base Note yet: 2026-11-10 Raft (5 d)"]
+        bn = tmp_path / "b" / "vault" / redrill.BASE_NOTES
+        bn.mkdir(parents=True)
+        (bn / "Raft Consensus.md").write_text("---\ncreated: 2026-11-12\n---\nleaders and terms\n")
+        p.telegram.flags.clear(); p.telegram.notes.clear()
+        p._maybe_redrill_nudge(datetime(2026, 11, 15, 19, 0))
+        assert p.telegram.notes == []  # title shares "raft", created after the lesson
+
+    def test_unwritten_rules(self):
+        lessons = [("2026-10-17 Virtual Memory.md", ""), ("2026-10-19 Re-drill — OS.md", ""),
+                   ("2026-10-10 Role Gap Map — X.md", ""), ("2026-10-10 Pattern — Arrays & Hashing.md.md", ""),
+                   ("2026-11-14 Re-drill (phone).md", "")]
+        notes = [("Hashing Removes Repeated Scans", date(2026, 10, 9), "see [[2026-10-10 Pattern — Arrays & Hashing]]"),
+                 ("Threads", date(2026, 1, 1), "old note, created before the lesson")]
+        assert redrill.unwritten(lessons, notes, date(2026, 11, 15)) == [("2026-10-17 Virtual Memory", 29)]
+        assert redrill.unwritten(lessons, notes, date(2026, 10, 18)) == []  # 1 d: too fresh

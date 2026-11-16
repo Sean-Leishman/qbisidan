@@ -127,6 +127,19 @@ cssclasses:
         quiz = self.vault_path / redrill.QUIZ_LOG
         return lessons, quiz.read_text(encoding="utf-8") if quiz.exists() else ""
 
+    def read_base_notes(self) -> list[tuple[str, "date | None", str]]:
+        """[(stem, created date or None, content)] for every Base Note; for the Base Note gate."""
+        folder = self.vault_path / redrill.BASE_NOTES
+        out = []
+        for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            m = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", text, re.M)
+            out.append((path.stem, date.fromisoformat(m.group(1)) if m else None, text))
+        return out
+
     def read_redrill_results(self, today: date) -> str:
         path = self.vault_path / redrill.LESSONS / redrill.note_name(today)
         return path.read_text(encoding="utf-8") if path.exists() else ""

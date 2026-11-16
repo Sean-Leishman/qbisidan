@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 LESSONS = "02 Sources/Lessons"
 QUIZ_LOG = "07 Projects/Interview Prep/Todo.md"
+BASE_NOTES = "05 Base Notes"
 PHONE = "Re-drill (phone)"
+NO_BASE_NOTE = ("Re-drill", "Role Gap Map", PHONE)  # lesson kinds whose close doesn't ask for a Base Note
 
 MISSED, UNSURE, SURE = "m", "u", "s"
 GAP_DAYS = {MISSED: 4, UNSURE: 10}  # SURE → ## Retired. The skill's re-drill close rules.
@@ -308,6 +310,34 @@ def collect(lessons: list[tuple[str, str]], quiz_log: str, today: date) -> list[
     live = [it for it in replay(lesson + quiz) if not _superseded(it, sessions)]
     due = [it for it in live if it.due is None or it.due <= today]
     return sorted(due, key=lambda it: it.due or date.min)
+
+
+# ── Base Note gate ────────────────────────────────────────────────────────────
+
+def unwritten(lessons: list[tuple[str, str]], base_notes: list[tuple[str, "date | None", str]],
+              today: date, min_age: int = 3, max_age: int = 45) -> list[tuple[str, int]]:
+    """Lessons between min_age and max_age days old with no Base Note yet: [(lesson stem, age)].
+
+    Every teaching close ends "Write the Base Note in your own words", and the vault's rule is
+    that the writing *is* the learning, so this is the step worth nagging about. A lesson has
+    its Base Note when some note in 05 Base Notes/ wikilinks the lesson, or was created on or
+    after the lesson and shares a significant word (4+ letters) with the lesson's topic.
+    base_notes: [(stem, created date or None, content)]."""
+    out = []
+    for name, content in lessons:
+        if any(k in name for k in NO_BASE_NOTE):
+            continue
+        when = lesson_date(name, content)
+        if when is None or not min_age <= (today - when).days <= max_age:
+            continue
+        stem = re.sub(r"(\.md)+$", "", Path(name).name)
+        words = {w for w in _words(lesson_topic(name)) if len(w) >= 4}
+        done = any(f"[[{stem}" in text or
+                   (created is not None and created >= when and words & _words(bstem))
+                   for bstem, created, text in base_notes)
+        if not done:
+            out.append((stem, (today - when).days))
+    return out
 
 
 # ── results note ──────────────────────────────────────────────────────────────

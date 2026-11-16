@@ -1341,11 +1341,15 @@ class Processor:
         if self.telegram.get_flag("redrill_nudge") == today:
             return
         n = len(self._drill_due())
-        if not n:
+        lessons, _ = self.vault_writer.read_redrill_sources()
+        missing = redrill.unwritten(lessons, self.vault_writer.read_base_notes(), now.date())
+        if not n and not missing:
             return
         self.telegram.set_flag("redrill_nudge", today)  # before sending: a crash must not re-send every 5 min
-        self.telegram.send_notification(self.config.telegram.allowed_chat_ids[0],
-                                        f"{n} re-drill{'s' if n != 1 else ''} due \u2014 /drill")
+        lines = [f"{n} re-drill{'s' if n != 1 else ''} due \u2014 /drill"] if n else []
+        if missing:  # the Base Note gate: the close step most often skipped
+            lines.append("No Base Note yet: " + ", ".join(f"{stem} ({age} d)" for stem, age in missing))
+        self.telegram.send_notification(self.config.telegram.allowed_chat_ids[0], "\n".join(lines))
 
     # ── Main entry points ──────────────────────────────────────────────────────
 

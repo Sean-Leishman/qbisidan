@@ -280,6 +280,8 @@ class TelegramQueue:
 
     def send_notification(self, chat_id: int, text: str) -> bool:
         """Send a notification message back to the user."""
+        logger.info(f"Notification → {chat_id}: {text.splitlines()[0][:120] if text else ''}"
+                    + (f" (+{len(text.splitlines()) - 1} lines)" if text and len(text.splitlines()) > 1 else ""))
         try:
             response = requests.post(
                 f"{self.base_url}/sendMessage",

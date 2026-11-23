@@ -6,6 +6,30 @@ from datetime import date, datetime, timedelta
 from dateutil import parser as dateutil_parser
 
 
+# The "/" menu Telegram shows while typing (setMyCommands). Order is the menu order.
+# Keep in step with parse_message and Processor.HELP_TEXT.
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("todo", "Add a todo to Inbox (@date for Deadlines)"),
+    ("done", "Tick off a todo by a few of its words"),
+    ("note", "New Fleeting Note (or a raw link, no AI)"),
+    ("daily", "Add to today's daily note (daily task <text> for Tasks)"),
+    ("read", "Add to To Be Read"),
+    ("watch", "Add to To Be Watched"),
+    ("someday", "Add to Someday"),
+    ("project", "<name> todo <text> or <name> <text>"),
+    ("event", "<title> <YYYY-MM-DD> <HH:MM> to calendar"),
+    ("ai", "Save a pasted AI answer to 02 Sources/AI"),
+    ("search", "Search vault notes"),
+    ("week", "Show This Week"),
+    ("triage", "Sort Inbox"),
+    ("digest", "This week's digest"),
+    ("drill", "Re-drill due lesson gaps"),
+    ("crawl", "Bookmark a channel's videos"),
+    ("backfill", "Ingest a saved history or playlist"),
+    ("status", "Today's capture summary"),
+    ("help", "Full command reference"),
+]
+
 @dataclass
 class ParsedCommand:
     """A parsed Telegram message ready for routing."""

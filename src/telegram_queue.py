@@ -1,5 +1,6 @@
 """Telegram bot integration - uses Telegram as the bookmark queue."""
 import json
+import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -246,6 +249,25 @@ class TelegramQueue:
         state = self._load_state()
         state[name] = value
         self._save_state(state)
+
+    def register_commands(self, commands: list[tuple[str, str]]) -> bool:
+        """Publish the "/" autocomplete menu (setMyCommands), once per change to the list.
+
+        The bot runs every few minutes, so the last list sent is kept in state and
+        Telegram is only called again when it differs.
+        """
+        payload = [{"command": name, "description": text} for name, text in commands]
+        if self.get_flag("registered_commands") == payload:
+            return True
+        try:
+            response = requests.post(f"{self.base_url}/setMyCommands", json={"commands": payload}, timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Could not register bot commands: {self._err(e)}")
+            return False
+        self.set_flag("registered_commands", payload)
+        logger.info(f"Registered {len(payload)} bot commands")
+        return True
 
     # Keep old method as alias for backward compatibility
     def get_pending_urls(self) -> list[TelegramMessage]:

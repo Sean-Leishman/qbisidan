@@ -9,7 +9,7 @@ from .agents.question_agent import QuestionAgent
 from .agents.redrill_agent import RedrillQuestionAgent
 from .agents.topic_filter import TopicFilterAgent
 from .agents.vault_writer import VaultWriter
-from .commands import ParsedCommand, parse_message
+from .commands import BOT_COMMANDS, ParsedCommand, parse_message
 from .config import Config
 from .crawl_state import CrawlRunState, CrawlStateStore
 from .linker import NoteLinkEngine
@@ -1496,6 +1496,10 @@ class Processor:
         """Fetch pending Telegram messages and process them."""
         logger.info("Fetching pending messages from Telegram")
         messages = self.telegram.get_pending_messages()
+        try:
+            self.telegram.register_commands(BOT_COMMANDS)
+        except Exception:
+            logger.exception("Registering bot commands failed")  # never let it block message processing
         # Digests before triage: triage blocks waiting for button taps.
         for job, name in ((self._maybe_weekly_digest, "Weekly digest"),
                           (self._maybe_monthly_digest, "Monthly digest")):

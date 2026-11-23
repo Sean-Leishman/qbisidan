@@ -330,3 +330,39 @@ def test_second_poller_is_refused_until_the_first_exits(tmp_path):
     assert first is not None and main_mod.poll_lock(lock) is None
     first.close()
     assert main_mod.poll_lock(lock) is not None
+
+
+class TestRegisterCommands:
+    COMMANDS = [("todo", "Add a todo"), ("help", "Full command reference")]
+
+    def test_sends_set_my_commands_once(self, queue):
+        ok = MagicMock(status_code=200)
+        with patch("src.telegram_queue.requests.post", return_value=ok) as post:
+            assert queue.register_commands(self.COMMANDS)
+            assert queue.register_commands(self.COMMANDS)
+        post.assert_called_once()
+        assert post.call_args.args[0].endswith("/setMyCommands")
+        assert post.call_args.kwargs["json"]["commands"][0] == {"command": "todo", "description": "Add a todo"}
+
+    def test_resends_when_list_changes(self, queue):
+        with patch("src.telegram_queue.requests.post", return_value=MagicMock(status_code=200)) as post:
+            queue.register_commands(self.COMMANDS)
+            queue.register_commands(self.COMMANDS + [("status", "Today's summary")])
+        assert post.call_count == 2
+
+    def test_failure_is_retried_next_run(self, queue):
+        bad = MagicMock()
+        bad.raise_for_status.side_effect = requests.HTTPError("400")
+        with patch("src.telegram_queue.requests.post", return_value=bad):
+            assert not queue.register_commands(self.COMMANDS)
+        assert queue.get_flag("registered_commands") is None
+
+
+def test_bot_commands_meet_telegram_limits():
+    from src.commands import BOT_COMMANDS, parse_message
+    import re
+    assert len(BOT_COMMANDS) <= 100
+    for name, text in BOT_COMMANDS:
+        assert re.fullmatch(r"[a-z0-9_]{1,32}", name)
+        assert 1 <= len(text) <= 256
+        assert parse_message(f"/{name} a b").command_type != "inbox", name
